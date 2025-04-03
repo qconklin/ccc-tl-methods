@@ -1,0 +1,6235 @@
+---
+title: "CCC Telomere Length Methods Analyses"
+subtitle: "Examinging blood collection and assay factors"
+author: "Quinn Conklin"
+date: last-modified
+format:
+  html:
+    theme:
+      light: flatly
+      dark: darkly
+    toc: true
+    toc-depth: 5
+    toc-title: "Contents"
+    toc-location: left 
+    title-block-banner: true
+    code-fold: true
+    link-external-newwindow: true
+
+csl: apa-single-spaced.csl
+link-citations: true
+editor: 
+  markdown: 
+    wrap: 72
+execute:
+  timeout: 600 # Increase timeout to 10 minutes
+---
+
+# Overview of the study
+
+In this study, we assessed the performance of the qPCR telomere length
+assay using DNA extracted with the Beckman Coulter GenFind
+v3magnetic-bead-based kit (cat# C34880/C34881) from whole blood samples
+collected remotely by study participants using EDTA treated microtainers
+(Becton Dickinson cat #366594).
+
+To evaluate the success of this procedure, we added several quality
+control assessments beyond the current qPCR telomere length protocol.
+These included 1) DNA quality assessments, 2) triplicate runs of the
+assay for every sample, rather than only those that varied more than 7%
+in the first two runs (as is current procedure), and 3) duplicate DNA
+extractions from every sample with sufficient material in order to
+assess the repeatability of the entire assay procedure. Thus, the
+metrics we are using to evaluate this procedure are DNA concentration
+and purity (as measured by OD 260/280 and 260/230), t/s ratios, the
+coefficient of variation as a metric of intraassay variation between 3
+runs of the telomere assay, and the Interclass Correlation Coefficient
+(ICC) as a measure of precision or repeatably of the telomere length
+measurement when the entire assay is repeated twice for the same
+samples.
+
+We investigate features of the sample, including sample volume, volume
+of blood used for extraction, and whether or not the sample contained
+blood clots. We also investigate aspects of the sample collection,
+transportation, and storage, including time from collection to freezing,
+temperature in the collection location, temperature in Davis when
+samples arrived, the condition of the cold packs the samples were
+shppiped on, and the extra year of freezer time for the baseline
+samples.
+
+# Overview of the data
+
+Blood sample collection details come from a file maintained by the Saron
+lab called
+"all-samples_with-dates-formatted_samples-sorted-for-UCSF.xlsx"
+
+Temperature data was collected for the dates and zip codes of sample
+collection and delivery date in Davis from this site:
+<https://www.almanac.com/weather/history/zipcode/95616/2021-07-03>
+
+Assay details, DNA variables, and T/S variables come from files sent by
+Jue Lin and prepared by the clean-prep-telomere-data.r scripts, which
+removes pilot samples and one extra duplicate.
+
+A new sample average T/S variable, excluding values from extracts that
+did not meet DNA quality standards, is calculated in this markdown, and
+is called sample.avg.ts.hq.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r}
+#| label: load packages
+
+library(openxlsx) # to write excel files
+library(readxl)
+
+library(rstatix) #for outlier detection
+
+library(tidyverse)
+library(dplyr) # a core package of tidyverse - dataframe manipulation
+library(plotly) # plotly - make plots interactive
+library(psych) # psych - descriptive stats
+library(kableExtra) # build and design tables
+library(knitr)
+
+library(ggplot2)
+library(gridExtra) # gridExtra - organize multiple plots
+library(grid)
+library(patchwork) # to arrange interactive plots created with plotly
+
+library(MASS) # from TRN ICC code
+library(lme4) # from TRN ICC code
+library(rptR) # from TRN ICC code
+
+library(lmerTest)
+library(nlme)
+library(car)
+library(emmeans)
+library(MuMIn) # model dredge fxn
+library(sjstats)
+
+library(easystats)
+
+```
+
+```{r}
+#| label: load-prep-participant-demographics-and-covariates
+
+# loading demographic data
+demographics <- readRDS("../../01_data/processed/participant.demo.tracking.rds")
+
+# demographics$orientation.group[demographics$orientation.group == "LGBTQA"] <- "LGBQA"
+# 
+# saveRDS(demographics, 
+#         file = "../../01_data/processed/participant.demo.tracking.rds") 
+
+demographics <- demographics |>
+    dplyr::select(ccc.id,
+                  random.id,
+                  state,                  
+                  age,
+                  age.range,
+                  ethnicity.census.approx,
+                  gender.group.v2,
+                  orientation.group,
+                  education.index,
+                  income.range.index,
+                  meditation.years.index
+                  )|>
+    rename(gender=gender.group.v2,
+           sexual.orientation=orientation.group)
+
+# loading telomere covariate data (height, weight, etc.)
+covariates <- readRDS("../../01_data/processed/telomere.covariates.scored.rds")
+
+covariates <- covariates|>
+    dplyr::select(random.id,
+                  sex,
+                  height.inches_t1,
+                  height.inches_t4,
+                  weight.lbs_t1,
+                  weight.lbs_t4,
+                  bmi_t1,
+                  bmi_t4
+    )
+
+# Merge demographics and covariates
+covariates <- left_join(demographics,
+                  covariates, 
+                  by = c("random.id"="random.id")
+                  )
+
+rm(demographics)
+
+# Read in the tracking data file to extract sample IDs
+
+tracking <- readRDS(
+      "../../01_data/processed/participant.tracking.rds"
+    )
+    
+tracking <- tracking|>
+        dplyr::select(random.id_t1,
+                      blood.kit.cs.id_t1)
+    
+covariates <- left_join(covariates, 
+                        tracking,
+                        by = c("random.id"="random.id_t1")
+                        )
+rm(tracking)
+    
+    
+# read excel with data sharing consent
+data_sharing_consent <- read.xlsx(
+    "../../01_data/raw/01_applicant_and_tracking_data/consent-to-data-sharing.xlsx")    
+
+covariates <- data_sharing_consent |> 
+    inner_join(covariates,
+               by = c("random.id"="random.id"))
+
+covariates <- covariates |> 
+    dplyr::select(ccc.id,
+                  blood.kit.cs.id_t1, 
+                  quant.data.sharing.consent,
+                  state,
+                  age,
+                  age.range,
+                  ethnicity.census.approx,
+                  gender,
+                  sex,
+                  sexual.orientation,
+                  education.index,
+                  income.range.index,
+                  height.inches_t1,
+                  height.inches_t4,
+                  weight.lbs_t1,
+                  weight.lbs_t4,
+                  bmi_t1,
+                  bmi_t4
+    )
+
+
+covariates <- covariates %>%
+    # Calculate the z-score for age
+    mutate(age.zscore = (age - mean(age, na.rm = TRUE)) / sd(age, na.rm = TRUE)) %>%
+    mutate(age.mean.cent = (age - mean(age, na.rm = TRUE))) %>%
+    dplyr::select(ccc.id,
+                  blood.kit.cs.id_t1, 
+                  quant.data.sharing.consent,
+                  state,
+                  age,
+                  age.zscore,
+                  everything()  # Keep other columns as they are
+                  )
+
+rm(data_sharing_consent)
+
+```
+
+```{r}
+#| label: load-prep-sample-data
+
+# Reads in blood sample variables for samples sent to UCSF
+sample.data <- readRDS( "./../../01_data/processed/blood.sample.info.rds")
+
+sample.data <- sample.data |>
+    # Reorder the factor levels so that "Frozen" is the first level and "Melted Warm" is the last
+   mutate(cold.pack.condition.reversed = factor(cold.pack.condition,
+                                      levels = c("4) Frozen", "3) Partially Frozen", "2) Melted Cold", "1) Melted Warm"),
+                                      labels = c("1) Frozen", "2) Partially Frozen", "3) Melted Cold", "4) Melted Warm"))) |>
+    mutate(cold.pack.dummy.reversed = case_when(
+        cold.pack.dummy == 1 ~ 4,
+        cold.pack.dummy == 2 ~ 3,
+        cold.pack.dummy == 3 ~ 2,
+        cold.pack.dummy == 4 ~ 1,
+        TRUE ~ cold.pack.dummy  # In case there are other unexpected values
+      ))|>
+    dplyr::select(
+        study.id,
+        sample.id,        
+        time.point,
+        collection.date,
+        arrival.date,
+        freezer.date,
+        transportation.duration,
+        collection.min.temp,
+        collection.mean.temp,
+        collection.max.temp,
+        davis.min.temp,
+        davis.mean.temp,
+        davis.max.temp,
+        sample.box,
+        sample.cell,
+        est.blood.vol,
+        cold.pack.number,
+        cold.pack.condition,
+        cold.pack.condition.reversed,
+        cold.pack.dummy,
+        cold.pack.dummy.reversed,
+        cold.pack.description,
+        delayed,
+        usable,
+        replacement,
+        sample.notes,
+        use.4.assay,
+        decision.notes
+    )
+
+
+dat <- left_join(sample.data,
+                covariates, 
+                by = c("study.id"="blood.kit.cs.id_t1")
+                )|>
+    dplyr::select(-c(ccc.id))
+
+
+```
+
+```{r}
+#| label: load-prep-extract-data
+
+# reads in DNA extract data
+extract.data <- read_excel(path = "./../../01_data/raw/03_sample_data/sample-extraction-data-v2.xlsx",
+                  sheet = "for-merge",
+                  col_names = TRUE) 
+
+
+extract.data <- extract.data |>
+    filter(sample.id!="CSPILOT")|>
+    filter(EHB!="883")
+
+# select variables to drop                
+extract.data <- extract.data |>
+    dplyr::select(-c(EHB,
+                     original.notes,
+                     clot.notes,
+                     QC.notes,
+                     "96.well.id"
+                     )
+    )
+
+# reads in extract level tl data 
+tl.extracts <- readRDS("./../../01_data/processed/telomere.extracts.rds")
+
+# makes blackburn lab id numeric in both datasets
+tl.extracts$EHB <- as.numeric(tl.extracts$EHB)
+extract.data$extract.number <- as.factor(extract.data$extract.number)
+extract.data$ul.DNA.20ng.30ul <- as.numeric(extract.data$ul.DNA.20ng.30ul)
+
+# merges extraction notes and tl extraction data
+extract.data <- left_join(tl.extracts,
+                  extract.data, 
+                  by = c("sample.id"="sample.id",
+                         "DNA.conc"="DNA.conc",
+                         "OD.260.280"="OD.260.280",
+                         "OD.260.230"="OD.260.230", 
+                         "extract"="extract.number"
+                         )
+                    )
+
+# create variable quantifying DNA included in each t/s assay reaction
+extract.data$rxn.DNA.conc <- extract.data$DNA.conc * (extract.data$ul.DNA.20ng.30ul/30)
+
+# select variables to keep                 
+extract.data <- extract.data |>
+    dplyr::select(index,
+                study.id,
+                sample.id,
+                time.point,
+                sample.box,
+                sample.cell,
+                est.vol,
+                extract,
+                EHB,
+                EHB.notes,
+                source.plate,
+                well.position,
+                blood.vol,
+                ul.WB,
+                ul.DPBS,
+                DNA.conc,
+                ul.DNA.20ng.30ul,
+                ul.EB.for.30ul,
+                rxn.DNA.conc,
+                OD.260.280,
+                OD.260.230,
+                hq.DNA,
+                clot,
+                run.1,
+                run.2,
+                run.3,
+                avg.ts.orig,
+                CV,
+                num.extracts,
+                hq.extracts,
+                timepts,
+                complete.data,
+                notes,
+                extraction.date,
+                operator
+                )
+
+# Create average t/s values
+    avg.ts.values <- extract.data |>
+        dplyr::select(study.id,
+                  sample.id,
+                  time.point,
+                  avg.ts.orig,
+                  )
+                                     
+# Calculate the average avg.ts values for sample.id
+    avg.ts.values <- avg.ts.values |>
+        group_by(sample.id) |>
+        summarise(        
+            study.id = first(study.id),
+            time.point = first(time.point),
+            sample.avg.ts.orig = mean(avg.ts.orig, na.rm = TRUE)
+          ) |>
+          ungroup()
+
+# merges extract data with sample data
+sample.data <- left_join(sample.data,
+                  avg.ts.values, 
+                  by = c("study.id"="study.id",
+                         "sample.id"="sample.id",
+                         "time.point"="time.point"
+                         )
+                  )
+
+# remove unneeded dataframe
+rm(tl.extracts)
+rm(avg.ts.values)
+
+```
+
+```{r}
+#| label: merge-extract-data-with-sample-data
+
+# merges extract data with sample data
+data <- left_join(extract.data,
+                  dat, 
+                  by = c("study.id"="study.id",
+                         "sample.id"="sample.id",
+                         "time.point"="time.point",
+                         "sample.box"="sample.box",
+                         "sample.cell"="sample.cell"
+                         )
+                  )
+
+# make factors
+data$study.id<-as.factor(data$study.id)
+data$sample.id<-as.factor(data$sample.id)
+data$time.point<-as.factor(data$time.point)
+
+data <- data %>%
+    # Create a combined bmi column based on time.point
+    mutate(bmi = case_when(
+        time.point == "t1" ~ bmi_t1,  # Use bmi_t1 when time.point is "t1"
+        time.point == "t4" ~ bmi_t4,  # Use bmi_t4 when time.point is "t4"
+        TRUE ~ NA_real_))|> # If neither, set NA (optional, in case there are other time.points)
+    # z-score BMI
+    mutate(bmi.zscore = (bmi - mean(bmi, na.rm = TRUE))/sd(bmi, na.rm = TRUE))|>
+    mutate(bmi.mean.cent = (bmi - mean(bmi, na.rm = TRUE)))|>
+    # z-score 260/280
+    mutate(OD.260.280.zscore = (OD.260.280 - mean(OD.260.280))/sd(OD.260.280))|>
+    # center 260/280 to 1.8 
+    mutate(OD.260.280.centered = (OD.260.280 - 1.8))|>
+    # z-score 260/230
+    mutate(OD.260.230.zscore = (OD.260.230 - mean(OD.260.230))/sd(OD.260.230))|>
+    # center 260/230 to 2.1 
+    mutate(OD.260.230.centered = (OD.260.230 - 2.1))|>
+    # z-score DNA concentration
+    mutate(DNA.conc.zscore = (DNA.conc - mean(DNA.conc))/sd(DNA.conc))|>
+    # z-score collection temp
+    mutate(collection.max.temp.zscore = (collection.max.temp - mean(collection.max.temp, na.rm = TRUE)) /
+                                             sd(collection.max.temp, na.rm = TRUE))|>
+    # z-score Davis temo
+    mutate(davis.max.temp.zscore = (davis.max.temp - mean(davis.max.temp, na.rm = TRUE)) / 
+                                        sd(davis.max.temp, na.rm = TRUE))|>
+    # z-score transportation duration
+    mutate(transportation.duration.zscore = (transportation.duration - mean(transportation.duration, na.rm = TRUE)) /
+                                                 sd(transportation.duration, na.rm = TRUE))
+
+```
+
+```{r}
+#| label: create-datasets
+
+# creates a dataset of T1 values only
+tl.t1.extracts <- subset(data, time.point=="t1")
+
+# creates a dataset of all samples with duplicate extractions
+tl.duplicates <- data|>
+        filter(num.extracts == "2") 
+
+# creates a data set of participants with two extracts at both timepoints
+tl.complete.extracts <- data|>
+    filter(complete.data == "Yes")
+
+# creates these same subsets with only high quality DNA
+hq.extracts <- data |> 
+    filter(hq.DNA == "Yes") 
+
+# calculates avg.ts for extracts excluding extracts that failed DNA qc
+hq.extracts$avg.ts.hq <- rowMeans(hq.extracts[, c("run.1", "run.2", "run.3")])
+
+# calculates avg.ts using first to runs only 
+# for extracts excluding extracts that failed DNA qc
+hq.extracts$avg.ts.hq.2.runs <- rowMeans(hq.extracts[, c("run.1", "run.2")])
+
+
+hq.t1.extracts <- hq.extracts |>
+    filter(time.point=="t1")
+
+hq.duplicates <- hq.extracts |>
+    filter(hq.extracts == "2") 
+
+# retains data for participants with two high quality extracts at both timepoints
+hq.complete.extracts <- hq.extracts |>
+    filter(complete.data == "Yes") |>
+    filter(hq.extracts == "2") |>
+    group_by(study.id) |>
+    filter(n() == 4) |>
+    ungroup()  # Ungroup to return to the original structure
+
+# Create a dataset called subset.hq.extracts
+    hq.avg.ts.values <- hq.extracts |>
+        dplyr::select(study.id,
+                  sample.id,
+                  time.point,
+                  extract,
+                  sex,
+                  age,
+                  bmi_t1,
+                  bmi_t4,                
+                  num.extracts,
+                  hq.extracts,
+                  timepts,
+                  complete.data,
+                  DNA.conc,
+                  OD.260.280,
+                  OD.260.230,
+                  hq.DNA,
+                  clot,
+                  avg.ts.orig,
+                  avg.ts.hq,
+                  avg.ts.hq.2.runs,
+                  est.blood.vol,
+                  davis.max.temp,
+                  collection.max.temp,
+                  cold.pack.condition,
+                  cold.pack.condition.reversed,
+                  cold.pack.dummy.reversed,
+                  cold.pack.dummy,
+                  transportation.duration
+                  )
+                                     
+# Calculate the average avg.ts values for sample.id
+    hq.sample.ts <- hq.avg.ts.values |>
+        dplyr::select(-c(extract,
+                         DNA.conc,
+                         OD.260.280,
+                         OD.260.230,
+                         hq.DNA)) |>
+        group_by(sample.id) |>
+        summarise(        
+            study.id = first(study.id),
+            time.point = first(time.point),
+            count = n(),
+            sex = first(sex),
+            age = first(age),
+            bmi_t1 = first(bmi_t1),
+            bmi_t4 = first(bmi_t4),
+            num.extracts = first(num.extracts),
+            hq.extracts = first(hq.extracts),
+            timepts = first(timepts),
+            complete.data = first(complete.data),
+            sample.avg.ts.orig = mean(avg.ts.orig, na.rm = TRUE),
+            sample.avg.ts.hq = mean(avg.ts.hq, na.rm = TRUE),
+            sample.avg.ts.hq.2.runs = mean(avg.ts.hq.2.runs, na.rm = TRUE),
+            davis.max.temp = first(davis.max.temp),
+            est.blood.vol = first(est.blood.vol),
+            collection.max.temp = first(collection.max.temp),
+            cold.pack.condition = first(cold.pack.condition),
+            cold.pack.condition.reversed = first(cold.pack.condition.reversed),
+            cold.pack.dummy = first(cold.pack.dummy),
+            cold.pack.dummy.reversed = first(cold.pack.dummy.reversed),
+            transportation.duration = first(transportation.duration),
+            num.clots = sum(clot == "Yes", na.rm = TRUE)
+          ) |>
+          filter(count == 1 | count == 2) |>
+          ungroup()
+    
+
+xlsx::write.xlsx(data,
+                 file = "./../../01_data/processed/review-telomere-extract-dataset.xlsx")
+
+xlsx::write.xlsx(hq.extracts,
+                 file = "./../../01_data/processed/review-telomere-hq.extract-dataset.xlsx")
+
+xlsx::write.xlsx(hq.avg.ts.values,
+                 file = "./../../01_data/processed/review-telomere-sample-dataset.xlsx")
+
+```
+
+```{r}
+#| label: pearson-correlation-fnx
+
+# Function to perform Pearson's correlation test and print results in desired format
+pearson_correlations <- function(data, var1, var2) {
+  # Perform Pearson's correlation test
+  correlation_test <- cor.test(data[[var1]], data[[var2]])
+  
+  # Extract the necessary information
+  r <- round(correlation_test$estimate, 2)
+  df <- correlation_test$parameter
+  p_value <- correlation_test$p.value
+  conf_int <- correlation_test$conf.int
+  
+  # Format p-value
+  if (p_value < 0.001) {
+    p_value_formatted <- "<.001"
+  } else {
+    p_value_formatted <- sub("^0\\.", ".", as.character(round(p_value, 3)))
+  }
+  
+  # Print the results in the desired format
+  result_string <- sprintf("Pearson: r(%d)=%.2f, p%s, 95%% CI [%.2f, %.2f]",
+                           df, r, ifelse(p_value < 0.001, p_value_formatted, paste("=",p_value_formatted)), conf_int[1], conf_int[2])
+  cat(result_string, "\n")
+  
+  # Remove correlation_test from the environment (optional)
+  rm(correlation_test, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: spearman-correlation-fnx
+
+# Function to perform Spearman's correlation test and print results in desired format
+spearman_correlations <- function(data, var1, var2) {
+  # Perform Spearman's correlation test
+  correlation_test <- cor.test(data[[var1]], data[[var2]], method = "spearman")
+  
+  # Extract the necessary information
+  rho <- round(correlation_test$estimate, 2)
+  p_value <- correlation_test$p.value
+  
+  # Format p-value
+  if (p_value < 0.001) {
+    p_value_formatted <- "<.001"
+  } else {
+    p_value_formatted <- sub("^0\\.", ".", as.character(round(p_value, 3)))
+  }
+  
+  # Print the results
+  result_string <- sprintf("Spearman: r=%.2f, p%s", rho, ifelse(p_value < 0.001, p_value_formatted, paste("=",p_value_formatted)))
+  cat(result_string, "\n")
+}
+
+```
+
+```{r}
+#| label: interactive-scatter-plot-template-with-grouping-color
+
+# Function to create the customized interactive scatter plot using plotly
+grouped_interactive_scatter_plot <- function(data, x_var, y_var, group, 
+                                             x_limits = NULL, y_limits = NULL, 
+                                             x_label, y_label, plot_title,
+                                             add_regression_line = TRUE,
+                                             h_lines = NULL,
+                                             h_line_colors = NULL) {
+  
+  # Convert factor to character if necessary
+  if (is.factor(data[[x_var]])) {
+    data[[x_var]] <- as.character(data[[x_var]])
+  }
+  
+  # Create the plotly scatter plot
+  plot <- plot_ly(data, 
+                  x = ~get(x_var), 
+                  y = ~get(y_var), 
+                  color = ~get(group), # Map color to group
+                  type = 'scatter', 
+                  mode = 'markers', 
+                  marker = list(size = 5, opacity = 0.6)) %>%
+    layout(title = plot_title,
+           xaxis = list(
+               title = x_label, range = x_limits, gridcolor = "rgba(0,0,0,0)"),
+           yaxis = list(
+               title = y_label, range = y_limits, gridcolor = "rgba(0,0,0,0)"),
+           showlegend = TRUE, # Enable legend for groups
+           legend = list(
+             x = 1,  # Adjust x position of legend
+             y = 1,  # Adjust y position of legend
+             bgcolor = 'rgba(255, 255, 255, 0.25)', # Set background color of legend
+             xanchor = 'right', # Anchor legend to right
+             yanchor = 'top',   # Anchor legend to top
+             itemsizing = 'constant', # keeps size of legend items constant, reduced size
+             borderwidth = 0, # Remove border width
+             itemwidth = 5,  # Adjust width of each legend item
+             itemspacing = 1,  # Adjust spacing between items
+             borderpad = 0,  # Adjust padding inside the border
+             itempad = 0 # reduces padding inside each legend item
+             ),
+           margin = list(
+             l = 50,  # Left margin
+             r = 25,  # Right margin
+             b = 50,  # Bottom margin
+             t = 50,  # Top margin
+             pad = 3  # Padding
+           ),
+           plot_bgcolor = 'white',
+           paper_bgcolor = 'white',
+           font = list(family = "sans", size = 12))
+  
+  # Conditionally add the linear model smoothing line
+  if (add_regression_line) {
+    model <- lm(get(y_var) ~ get(x_var), data = data)
+    line_data <- data.frame(x = data[[x_var]], y = predict(model, data))
+    
+    plot <- plot %>%
+      add_lines(data = line_data, x = ~x, y = ~y, 
+                line = list(color = 'dodgerblue1', width = 2), 
+                showlegend = FALSE) # Hide the regression line from legend
+  }
+  
+# Conditionally add horizontal lines
+if (!is.null(h_lines)) {
+  if (is.null(h_line_colors)) {
+    h_line_colors <- rep("red", length(h_lines))
+  }
+  
+  for (i in seq_along(h_lines)) {
+    plot <- plot %>%
+      add_segments(
+        x = min(data[[x_var]], na.rm = TRUE),  # Use the min value of x_var for x
+        xend = max(data[[x_var]], na.rm = TRUE),  # Use the max value of x_var for xend
+        y = h_lines[i], 
+        yend = h_lines[i],
+        line = list(color = h_line_colors[i], width = 0.5),
+        marker = list(opacity = 0), # Hide the markers at endpoints
+        showlegend = FALSE # Hide horizontal lines from legend
+      )
+  }
+}
+
+  
+  return(plot)
+}
+
+
+
+```
+
+```{r}
+#| label: interactive-scatter-plot-template
+
+# Function to create the customized interactive scatter plot using plotly
+interactive_scatter_plot <- function(data, x_var, y_var, colors, 
+                                     x_limits = NULL, y_limits = NULL, 
+                                     x_label, y_label, plot_title,
+                                     width = NULL, height = NULL,  # Default to NULL
+                                     add_regression_line = TRUE,
+                                     h_lines = NULL,
+                                     h_line_colors = NULL) {
+  
+  # Convert factor to character if necessary
+  if (is.factor(data[[x_var]])) {
+    data[[x_var]] <- as.character(data[[x_var]])
+  }
+  
+  # Create the plotly scatter plot
+  plot <- plot_ly(data, 
+                  x = ~get(x_var), 
+                  y = ~get(y_var), 
+                  type = 'scatter', 
+                  mode = 'markers', 
+                  marker = list(color = colors, size = 5, opacity = 0.6)) %>%
+    layout(title = plot_title,
+           xaxis = list(
+               title = x_label, range = x_limits, gridcolor = "rgba(0,0,0,0)"),
+           yaxis = list(
+               title = y_label, range = y_limits, gridcolor = "rgba(0,0,0,0)"),
+           showlegend = FALSE,
+           plot_bgcolor = 'white',
+           paper_bgcolor = 'white',
+           font = list(family = "Times New Roman", size = 12))
+  
+  # Set width and height if provided
+  if (!is.null(width) && !is.null(height)) {
+    plot <- plot %>% layout(width = width, height = height)
+  }
+  
+  # Conditionally add the linear model smoothing line
+  if (add_regression_line) {
+    model <- lm(get(y_var) ~ get(x_var), data = data)
+    line_data <- data.frame(x = data[[x_var]], y = predict(model, data))
+    
+    plot <- plot %>%
+      add_lines(data = line_data, x = ~x, y = ~y, 
+                line = list(color = 'dodgerblue1', width = 2),
+                mode = 'lines',
+                type = 'scatter',
+                hoverinfo = 'none')
+  }
+  
+  # Conditionally add horizontal lines
+  if (!is.null(h_lines)) {
+    if (is.null(h_line_colors)) {
+      h_line_colors <- rep("red", length(h_lines))
+    }
+    
+    for (i in seq_along(h_lines)) {
+      plot <- plot %>%
+        add_segments(x = ifelse(is.null(x_limits), min(data[[x_var]]), x_limits[1]), 
+                     xend = ifelse(is.null(x_limits), max(data[[x_var]]), x_limits[2]), 
+                     y = h_lines[i], yend = h_lines[i],
+                     line = list(color = h_line_colors[i], width = 0.5),
+                     marker = list(opacity = 0) # Hide the markers at endpoints
+        )
+    }
+  }
+  
+  return(plot)
+}
+
+```
+
+```{r}
+#| label: plotly-interactive-scatter-plot
+
+# Function to create the customized interactive scatter plot using plotly
+plotly_interactive_scatter_plot <- function(data, x_var, y_var, colors, 
+                                     x_limits = NULL, y_limits = NULL, 
+                                     x_label, y_label, plot_title,
+                                     width = NULL, height = NULL,  # Default to NULL
+                                     add_regression_line = TRUE,
+                                     h_lines = NULL,
+                                     h_line_colors = NULL) {
+  
+  # Convert factor to character if necessary
+  if (is.factor(data[[x_var]])) {
+    data[[x_var]] <- as.character(data[[x_var]])
+  }
+  
+  # Create the plotly scatter plot
+  plot <- plot_ly(data, 
+                  x = ~get(x_var), 
+                  y = ~get(y_var), 
+                  type = 'scatter', 
+                  mode = 'markers', 
+                  marker = list(color = colors, size = 5, opacity = 0.6)) %>%
+    layout(title = plot_title,
+           xaxis = list(
+               title = x_label, range = x_limits, gridcolor = "rgba(0,0,0,0)"),
+           yaxis = list(
+               title = y_label, range = y_limits, gridcolor = "rgba(0,0,0,0)"),
+           showlegend = FALSE,
+           plot_bgcolor = 'white',
+           paper_bgcolor = 'white',
+           font = list(family = "Times New Roman", size = 12),
+           margin = list(t = 80, b = 80))  # Adjust top and bottom margins
+  
+  # Set width and height if provided
+  if (!is.null(width) && !is.null(height)) {
+    plot <- plot %>% layout(width = width, height = height)
+  }
+  
+  # Conditionally add the linear model smoothing line
+  if (add_regression_line) {
+    model <- lm(get(y_var) ~ get(x_var), data = data)
+    line_data <- data.frame(x = data[[x_var]], y = predict(model, data))
+    
+    plot <- plot %>%
+      add_lines(data = line_data, x = ~x, y = ~y, 
+                line = list(color = 'dodgerblue1', width = 2),
+                mode = 'lines',
+                type = 'scatter',
+                hoverinfo = 'none')
+  }
+  
+  # Conditionally add horizontal lines
+  if (!is.null(h_lines)) {
+    if (is.null(h_line_colors)) {
+      h_line_colors <- rep("red", length(h_lines))
+    }
+    
+    for (i in seq_along(h_lines)) {
+      plot <- plot %>%
+        add_segments(x = ifelse(is.null(x_limits), min(data[[x_var]]), x_limits[1]), 
+                     xend = ifelse(is.null(x_limits), max(data[[x_var]]), x_limits[2]), 
+                     y = h_lines[i], yend = h_lines[i],
+                     line = list(color = h_line_colors[i], width = 0.5),
+                     marker = list(opacity = 0) # Hide the markers at endpoints
+        )
+    }
+  }
+  
+  return(plot)
+}
+
+
+```
+
+```{r}
+#| label: static-scatter-plot-template
+
+# Function to create the customized scatter plot
+custom_scatter_plot <- function(data, x_var, y_var, colors, 
+                                x_limits = NULL, y_limits = NULL, 
+                                x_label, y_label, plot_title) {
+    
+  # Wrap the plot title text to make it fit in multiple lines
+  wrapped_title <- str_wrap(plot_title, width = 30)  # Adjust width as needed
+  
+  # Plot parameters
+  p <- ggplot(data, aes_string(x = x_var, y = y_var)) +
+      geom_point(size=1.5, alpha=.6, color=colors) +
+      labs(
+        x = x_label,
+        y = y_label,
+        title = wrapped_title  # Adding the wrapped plot title
+        ) +
+#  scale_x_continuous(expand = c(0, 0)) +  # Removes extra space on the x-axis
+#  scale_y_continuous(expand = c(0, 0)) +  # Removes extra space on the y-axis
+    geom_smooth(method=lm) +
+    theme_minimal() +
+    theme(
+      aspect.ratio = 1,  
+      text = element_text(family = "Arial"), # Change font to Arial
+      plot.title = element_text(size = 14, # Adjust title size
+                                face = "bold", 
+                                hjust = 0.5,
+                                margin = margin(b = 10)),  # Center title and 
+      axis.title = element_text(margin = margin(b = 10, t = 10)),
+      axis.text.y = element_text(size = 14),
+      axis.text.x = element_text(size = 14),
+      axis.title.x = element_text(size = 14, 
+                                  face = "bold", 
+                                  margin = margin(t = 10)),  # Increase top margin
+      axis.title.y = element_text(size = 14, 
+                                  face = "bold", 
+                                  margin = margin(r = 5, l =10)),  # Increase right margin
+      legend.position = "none",
+      plot.margin = margin(t = 10, b = 10),  # Add white space at the top and bottom
+      panel.grid.major = element_blank(),  # Remove major gridlines
+      panel.grid.minor = element_blank(),  # Remove minor gridlines
+      panel.background = element_blank(),  # Remove background grid
+      axis.line = element_line(color = "black"),  # Add axis lines
+      axis.ticks = element_line(color = "black")  # Add tick marks to axes
+    ) +
+    scale_color_manual(values = colors) + # Change point colors
+    scale_fill_manual(values = colors)   # Change fill colors (if needed)
+  
+  
+  # Conditionally add x and y axis limits if they are provided
+  if (!is.null(x_limits)) {
+    p <- p + coord_cartesian(xlim = x_limits)
+  }
+  if (!is.null(y_limits)) {
+    p <- p + coord_cartesian(ylim = y_limits)
+  }
+  
+  return(p)
+}
+
+
+```
+
+```{r}
+#| label: boxplot-template
+
+
+# Function to create the customized boxplot with matching colors for box and jittered points
+cp_custom_boxplot <- function(data, x_var, y_var, colors, 
+                              x_limits = NULL, y_limits = NULL, 
+                              x_label, y_label, plot_title) {
+    
+  # Wrap the plot title text to make it fit in multiple lines
+  wrapped_title <- str_wrap(plot_title, width = 30)  # Adjust width as needed
+
+  # Boxplot will use the full data (including outliers)
+  p <- ggplot() +
+            # Add jitter plot using the filtered data (excluding outliers)
+            geom_jitter(data = data, aes_string(x = x_var, y = y_var, color = "colors"),  
+                        alpha = .6,  # Set transparency for overlapping points
+                        width = .2) +  # Add some spread to the jittered points
+            # Add boxplot using the full dataset (including outliers)
+            geom_boxplot(data = data, aes_string(x = x_var, y = y_var, fill = "colors"),  
+                         size = .5, 
+                         alpha = 0.4,
+                         outliers = FALSE) +  # Transparency for boxplot
+      labs(
+        x = x_label,
+        y = y_label,
+        title = wrapped_title  # Adding the wrapped plot title
+      ) +
+      theme_minimal() +
+      theme(
+        aspect.ratio = 1,  
+        text = element_text(family = "Arial"), # Change font to Arial
+        plot.title = element_text(size = 14, # Adjust title size
+                                  face = "bold", 
+                                  hjust = 0.5,
+                                  margin = margin(b = 10)),  # Center title and 
+        axis.title = element_text(margin = margin(b = 10, t = 10)),
+        axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold", 
+                                    margin = margin(t = 10)),  # Increase top margin
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold", 
+                                    margin = margin(r = 5, l =10)),  # Increase right margin
+        legend.position = "none",  # Remove legend (if not needed)
+        plot.margin = margin(t = 10, b = 10),  # Add white space at the top and bottom
+        panel.grid.major = element_blank(),  # Remove major gridlines
+        panel.grid.minor = element_blank(),  # Remove minor gridlines
+        panel.background = element_blank(),  # Remove background grid
+        axis.line = element_line(color = "black"),  # Add axis lines
+        axis.ticks = element_line(color = "black")  # Add tick marks to axes
+      ) +
+      scale_fill_manual(values = colors) +  # Apply the color scheme to the fill
+      scale_color_manual(values = colors)   # Apply the same color scheme to the jittered points
+  
+  # Wrap x-axis labels
+  p <- p + scale_x_discrete(labels = scales::wrap_format(width = 9)) # Adjust 'width' as needed
+  
+  # Conditionally add x and y axis limits if they are provided
+  if (!is.null(x_limits)) {
+    p <- p + coord_cartesian(xlim = x_limits)
+  }
+  if (!is.null(y_limits)) {
+    p <- p + coord_cartesian(ylim = y_limits)
+  }
+  
+  return(p)
+}
+
+```
+
+```{r}
+#| label: static-faceted-scatter-plot-template
+
+# Function to create the customized scatter plot with faceting
+facet_scatter_plot <- function(data, x_var, y_var, colors, 
+                                x_limits = NULL, y_limits = NULL, 
+                                x_label, y_label, plot_title, facet_var = NULL) {
+  p <- ggplot(data, aes_string(x = x_var, y = y_var)) +
+    geom_point(size=1, alpha=.6, color=colors) +
+    labs(
+      x = x_label,
+      y = y_label,
+      title = plot_title  # Adding the plot title
+    ) + 
+    geom_smooth(method=lm) +
+    theme_minimal() +
+    theme(
+      text = element_text(family = "Arial"), # Change font to Times New Roman
+      plot.title = element_text(size = 14, # Adjust title size
+                                face = "bold", # Bold title
+                                hjust = 0.5, # Center title and 
+                                margin = margin(t = 10, b = 10)),  
+      axis.title = element_text(size = 14,face = "bold", margin = margin(b = 10)),
+      axis.text.y = element_text(size = 14),
+      axis.text.x = element_text(size = 14),
+      axis.title.x = element_text(margin = margin(t = 10)), # Increase top margin
+      axis.title.y = element_text(margin = margin(r = 10)), # Increase right margin
+      strip.text = element_text(size = 12, face = "bold"),
+      legend.position = "none",
+      plot.margin = margin(t = 10, b = 10),  # Add white space at the top and bottom
+      panel.grid.major = element_blank(),  # Remove major gridlines
+      panel.grid.minor = element_blank(),  # Remove minor gridlines
+      panel.background = element_blank(),  # Remove background grid
+      axis.line = element_line(color = "black"),  # Add axis lines
+      axis.ticks = element_line(color = "black")  # Add tick marks to axes
+    ) +
+    scale_color_manual(values = colors) + # Change point colors
+    scale_fill_manual(values = colors) # Change fill colors (if needed)
+  
+  # Conditionally add x and y axis limits if they are provided
+  if (!is.null(x_limits) || !is.null(y_limits)) {
+    p <- p + coord_cartesian(xlim = x_limits, ylim = y_limits)
+  }
+  
+  # Conditionally add faceting if the faceting variable is provided
+  if (!is.null(facet_var)) {
+    p <- p + facet_wrap(as.formula(paste('~', facet_var)), scales = 'fixed')
+  }
+  
+  return(p)
+}
+
+
+```
+
+# Demographics
+
+```{r}
+#| label: summarize-demographics-for-particiapnts-with-tl-data
+
+demo.summary <- data |>
+    filter(time.point=="t1") |>
+    filter(extract=="1")
+
+demo.summary.subset <- demo.summary |>
+    filter(quant.data.sharing.consent=="Yes")
+
+```
+
+```{r}
+#| label: age-and-BMI
+
+# Sample with telomere measurements
+
+demo.table <- demo.summary |>
+    dplyr::select(age,
+           bmi_t1)|>
+    describe() |>
+    dplyr::select(-c(vars))
+
+demo.table |>
+    dplyr::mutate(Variable = rownames(demo.table)) |> 
+    dplyr::select(Variable, everything()) |> # Reorder to have 'Variable' as the first column
+    kbl(caption = "Age and BMI", digits = 2, row.names = FALSE) |>
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+demo.summary.t4 <- data |>
+    filter(time.point=="t4") |>
+    filter(extract=="1")
+
+demo.table <- demo.summary.t4 |>
+    dplyr::select(bmi_t4)|>
+    describe() |>
+    dplyr::select(-c(vars))
+
+demo.table |>
+    dplyr::mutate(Variable = rownames(demo.table)) |> 
+    dplyr::select(Variable, everything()) |> # Reorder to have 'Variable' as the first column
+    kbl(caption = "Age and BMI", digits = 2, row.names = FALSE) |>
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+# Full Study Sample
+
+demo.table <- covariates |>
+    dplyr::select(age,
+           bmi_t1,
+           bmi_t4)|>
+    describe() |>
+    dplyr::select(-c(vars))
+
+demo.table |>
+    dplyr::mutate(Variable = rownames(demo.table)) |> 
+    dplyr::select(Variable, everything()) |> # Reorder to have 'Variable' as the first column
+    kbl(caption = "Age and BMI", digits = 2, row.names = FALSE) |>
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+# demo.summary.subset |>
+#     dplyr::select(age,
+#            bmi_t1,
+#            bmi_t4)|>
+#     describe() |>
+#     dplyr::select(-c(vars)) |>
+#     kbl(caption = "Age, BMI T1, BMI T4 - Subset we can share", digits = 2, row.names = FALSE) |>
+#     kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+```
+
+```{r}
+#| label: sex
+
+counts <- table(demo.summary$sex)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages)
+
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Sex", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+counts <- table(covariates$sex)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages)
+
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Sex", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+# counts<-table(demo.summary.subset$sex)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Sex - Subset we can share", digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+```
+
+```{r}
+#| label: gender
+
+counts<-table(demo.summary$gender)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Gender", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+counts<-table(covariates$gender)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Gender", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# counts<-table(demo.summary.subset$gender)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Gender - Subset we can share", digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+```
+
+```{r}
+
+#| label: sexual-orientiation
+
+counts<-table(demo.summary$sexual.orientation)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Sexual Orientation", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+
+counts<-table(covariates$sexual.orientation)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Sexual Orientation", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+# counts<-table(demo.summary.subset$sexual.orientation)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Sexual Orientation - Subset we can share", digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+```
+
+```{r}
+#| label: ethnicity
+
+counts<-table(demo.summary$ethnicity.census.approx)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Ethnicity", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+counts<-table(covariates$ethnicity.census.approx)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Ethnicity", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+
+# counts<-table(demo.summary.subset$ethnicity.census.approx)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Ethnicity - Subset we can share", digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+```
+
+```{r}
+#| label: income
+
+counts<-table(demo.summary$income.range.index)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Income", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+counts<-table(covariates$income.range.index)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Income", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# counts<-table(demo.summary.subset$income.range.index)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Income - Subset we can share", digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+```
+
+```{r}
+#| label: education
+
+counts<-table(demo.summary$education.index)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Education", position = "left", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+counts<-table(covariates$education.index)
+percentages <- prop.table(counts) * 100
+results <- data.frame(
+  Category = names(counts),
+  Count = as.integer(counts),
+  Percentage = percentages
+)
+results %>%
+    dplyr::select(-c(Percentage.Var1)) %>%
+    rename(Percentage=Percentage.Freq) %>%
+  kbl(caption = "Education", position = "left", digits = 2, row.names = FALSE) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# counts<-table(demo.summary.subset$education.index)
+# percentages <- prop.table(counts) * 100
+# results <- data.frame(
+#   Category = names(counts),
+#   Count = as.integer(counts),
+#   Percentage = percentages
+# )
+# results %>%
+#     dplyr::select(-c(Percentage.Var1)) %>%
+#     rename(Percentage=Percentage.Freq) %>%
+#   kbl(caption = "Education - Subset we can share",digits = 2, row.names = FALSE) %>%
+#   kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+rm(results)
+rm(counts)
+rm(percentages)
+rm(demo.summary.subset)
+
+```
+
+# Descriptive Statistics
+
+## Extract Level
+
+```{r}
+
+# Select relevant columns and store them in 'variables'
+variables <- data |>   
+    dplyr::select(blood.vol, 
+                DNA.conc, 
+                OD.260.280, 
+                OD.260.230,
+                avg.ts.orig)
+
+# Create a summary statistics table and clean it up
+summary_scores <- variables |>   
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+    kbl(caption = "Extract Level Descriptive Statistics - All Extracts", digits = 2, row.names = FALSE) |> 
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+
+# Select relevant columns and store them in 'variables'
+variables <- hq.extracts |>   
+    dplyr::select(blood.vol, 
+                DNA.conc, 
+                OD.260.280, 
+                OD.260.230,
+                avg.ts.hq,
+                avg.ts.hq.2.runs)
+
+# Create a summary statistics table and clean it up
+summary_scores <- variables |>   
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+    kbl(caption = "Extract Level Descriptive Statistics - High Quality Extracts Only", 
+        digits = 2, row.names = FALSE) |> 
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+# TIME 1 ONLY
+
+# Select relevant columns and store them in 'variables'
+variables <- hq.extracts |>   
+  dplyr::select(blood.vol, 
+                DNA.conc, 
+                OD.260.280, 
+                OD.260.230,
+                avg.ts.hq,
+                avg.ts.hq.2.runs,
+                time.point)
+
+# Use describeBy to get summary statistics by 'time.point'
+summary_scores <- variables |> 
+    filter(time.point=="t1") |>
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+  
+# Drop timepoint column
+summary_scores <- summary_scores[rownames(summary_scores) != "time.point*", ]
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+  kbl(caption = "Extract Level Descriptive Statistics at Time 1", digits = 2, row.names = FALSE) |> 
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+# TIME 4 ONLY
+
+# Use describeBy to get summary statistics by 'time.point'
+summary_scores <- variables |> 
+    filter(time.point=="t4") |>
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+  
+# Drop timepoint column
+summary_scores <- summary_scores[rownames(summary_scores) != "time.point*", ]
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+  kbl(caption = "Extract Level Descriptive Statistics at Time 4", digits = 2, row.names = FALSE) |> 
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+```
+
+## Sample Level
+
+```{r}
+
+# Select relevant columns and store them in 'variables'
+variables <- data |>   
+    filter(extract==1) |>
+    dplyr::select(est.blood.vol,
+                transportation.duration,
+                collection.max.temp,
+                davis.max.temp,
+                cold.pack.dummy.reversed,
+                avg.ts.orig)
+
+# Create a summary statistics table and clean it up
+summary_scores <- variables |>   
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad,range))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+    kbl(caption = "Sample Level Descriptive Statistics", digits = 2, row.names = FALSE) |> 
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+```
+
+
+```{r}
+
+# Select relevant columns and store them in 'variables'
+variables <- hq.sample.ts |>   
+    dplyr::select(est.blood.vol,
+                  transportation.duration,
+                collection.max.temp,
+                davis.max.temp,
+                cold.pack.dummy.reversed,
+                sample.avg.ts.hq,
+                sample.avg.ts.hq.2.runs)
+
+
+# Create a summary statistics table and clean it up
+summary_scores <- variables |>   
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad,range))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+    kbl(caption = "Sample Level Descriptive Statistics - High Quality Extracts Only", 
+        digits = 2, row.names = FALSE) |> 
+    kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+```
+
+### Time 1
+
+```{r}
+# Select relevant columns and store them in 'variables'
+variables <- hq.sample.ts |>   
+    dplyr::select(est.blood.vol,
+                  transportation.duration,
+                collection.max.temp,
+                davis.max.temp,
+                cold.pack.dummy.reversed,
+                sample.avg.ts.hq,
+                sample.avg.ts.hq.2.runs,
+                time.point)
+
+
+# Use describeBy to get summary statistics by 'time.point'
+summary_scores <- variables |> 
+    filter(time.point=="t1") |>
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+  
+# Drop timepoint column
+summary_scores <- summary_scores[rownames(summary_scores) != "time.point*", ]
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+  kbl(caption = "Sample Level Descriptive Statistics at Time 1", digits = 2, row.names = FALSE) |> 
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+```
+
+### Time 4
+
+```{r}
+# TIME 4 ONLY
+
+# Use describeBy to get summary statistics by 'time.point'
+summary_scores <- variables |> 
+    filter(time.point=="t4") |>
+    describe() |>  # Assuming you want the summary statistics
+    dplyr::select(-c(vars))  # Removing the unwanted column (assuming 'vars' exists in the output)
+
+
+# Add a column for variable names (using row names)
+summary_scores <- summary_scores |> 
+    dplyr::select(-c(trimmed,mad))|>
+    dplyr::mutate(Variable = rownames(summary_scores)) |> 
+    dplyr::select(Variable, everything())  # Reorder to have 'Variable' as the first column
+  
+# Drop timepoint column
+summary_scores <- summary_scores[rownames(summary_scores) != "time.point*", ]
+
+# Create the final table with formatted summary statistics
+table <- summary_scores |> 
+  kbl(caption = "Sample Level Descriptive Statistics at Time 4", digits = 2, row.names = FALSE) |> 
+  kable_classic(full_width = FALSE, html_font = "Times New Roman", position = "left")
+
+# Print the table
+table
+
+```
+
+```{r}
+
+dat.1 <- data |>   
+    filter(extract==1) |>
+    dplyr::select(sample.id,
+                  extract,
+                  est.blood.vol,
+                  transportation.duration,
+                  collection.max.temp,
+                  davis.max.temp,
+                  cold.pack.dummy.reversed
+                  )
+
+dat.2 <- hq.sample.ts |>   
+    dplyr::select(sample.id,
+                  transportation.duration,
+                  collection.max.temp,
+                  davis.max.temp,
+                  cold.pack.dummy.reversed,
+                  sample.avg.ts.orig,
+                  sample.avg.ts.hq,
+                  sample.avg.ts.hq.2.runs,
+                  time.point
+                  )
+
+```
+
+# External Validity Measures
+
+## T1 and T4 T/S correlations
+
+```{r}
+
+ t1.samples <- hq.sample.ts|>
+     filter(time.point=="t1")|>
+     dplyr::select(study.id,
+                   sample.avg.ts.hq,
+                   sample.avg.ts.hq.2.runs)
+
+ t4.samples <- hq.sample.ts|>
+     filter(time.point=="t4")|>
+     dplyr::select(study.id,
+                   sample.avg.ts.hq,
+                   sample.avg.ts.hq.2.runs)
+ 
+ validity.check <- t1.samples %>% 
+    inner_join(t4.samples, 
+            by = c("study.id"="study.id"))
+ 
+pearson_correlations(validity.check, "sample.avg.ts.hq.x", "sample.avg.ts.hq.y")
+    
+pearson_correlations(validity.check, "sample.avg.ts.hq.2.runs.x", "sample.avg.ts.hq.2.runs.y")
+
+
+ t1.extract.1 <- hq.duplicates |>
+     filter(extract==1)|>
+     filter(time.point=="t1")|>
+     dplyr::select(study.id,
+                   avg.ts.hq)
+
+ t4.extract.1 <- hq.duplicates|>
+     filter(extract==1)|>
+     filter(time.point=="t4")|>
+     dplyr::select(study.id,
+                   avg.ts.hq)
+ 
+ validity.check.e1 <- t1.extract.1 %>% 
+    inner_join(t4.extract.1, 
+            by = c("study.id"="study.id"))
+ 
+pearson_correlations(validity.check.e1, "avg.ts.hq.x", "avg.ts.hq.y")
+ 
+ 
+  t1.extract.2 <- hq.duplicates |>
+     filter(extract==2)|>
+     filter(time.point=="t1")|>
+     dplyr::select(study.id,
+                   avg.ts.hq)
+
+ t4.extract.2 <- hq.duplicates|>
+     filter(extract==2)|>
+     filter(time.point=="t4")|>
+     dplyr::select(study.id,
+                   avg.ts.hq)
+ 
+  validity.check.e2 <- t1.extract.2 %>% 
+    inner_join(t4.extract.2, 
+            by = c("study.id"="study.id"))
+ 
+ pearson_correlations(validity.check.e2, "avg.ts.hq.x", "avg.ts.hq.y")
+
+```
+
+## Age
+
+```{r}
+
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "age",
+        facet_var = "time.point", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Age", # Specify x-axis label
+        plot_title = "Telomere Length by Age"
+    ) 
+
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "age", "sample.avg.ts.hq")
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "age", "sample.avg.ts.hq.2.runs")
+    
+    pearson_correlations(hq.duplicates |>
+        filter(time.point=="t1")|>
+        filter(extract==1), 
+        "age", "avg.ts.hq")
+    
+    pearson_correlations(hq.duplicates |>
+        filter(time.point=="t1")|>
+        filter(extract==2), 
+        "age", "avg.ts.hq")
+      
+    
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "age", "sample.avg.ts.hq")
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "age", "sample.avg.ts.hq.2.runs")
+    
+    pearson_correlations(hq.duplicates |>
+        filter(time.point=="t4")|>
+        filter(extract==1), 
+        "age", "avg.ts.hq")
+    
+    pearson_correlations(hq.duplicates |>
+        filter(time.point=="t4")|>
+        filter(extract==2), 
+        "age", "avg.ts.hq")
+    
+```
+
+## BMI
+
+```{r}
+# Create a customized scatter plot with faceting
+  custom_scatter_plot(
+        data = hq.sample.ts|>
+            filter (time.point=="t1"),
+        y_var = "sample.avg.ts.hq",
+        x_var = "bmi_t1",
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Body Mass Index (BMI)", # Specify x-axis label
+        plot_title = "Telomere Length by BMI"
+    ) 
+
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "bmi_t1", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "bmi_t1", "sample.avg.ts.hq.2.runs")
+    
+    spearman_correlations(hq.duplicates |>
+        filter(time.point=="t1")|>
+        filter(extract==1), 
+        "bmi_t1", "avg.ts.hq")
+    
+    spearman_correlations(hq.duplicates |>
+        filter(time.point=="t1")|>
+        filter(extract==2), 
+        "bmi_t1", "avg.ts.hq")
+      
+# Time 4    
+  custom_scatter_plot(
+        data = hq.sample.ts|>
+            filter (time.point=="t4"),
+        y_var = "sample.avg.ts.hq",
+        x_var = "bmi_t4",
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Body Mass Index (BMI)", # Specify x-axis label
+        plot_title = "Telomere Length by BMI"
+    ) 
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "bmi_t4", "sample.avg.ts.hq")
+     
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "bmi_t4", "sample.avg.ts.hq.2.runs")
+    
+    spearman_correlations(hq.duplicates |>
+        filter(time.point=="t4")|>
+        filter(extract==1), 
+        "bmi_t4", "avg.ts.hq")
+    
+    spearman_correlations(hq.duplicates |>
+        filter(time.point=="t4")|>
+        filter(extract==2), 
+        "bmi_t4", "avg.ts.hq")
+    
+```
+
+## Sex
+
+### Descriptives
+
+```{r}
+#| label: table-t/s-by-sex
+
+# Filter data for males and females
+hq.sample.ts.two.sex <- hq.sample.ts |>
+    filter(sex %in% c("Male", "Female"))
+
+# Create dataset for t1 and calculate mean and sd for each sex
+hq.sample.ts.two.sex.t1 <- hq.sample.ts.two.sex |>
+    filter(time.point == "t1")
+
+t1_ns <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t1, FUN = length)
+t1_means <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t1, FUN = mean)
+t1_sds <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t1, FUN = sd)
+
+# Create dataset for t4 and calculate mean and sd for each sex
+hq.sample.ts.two.sex.t4 <- hq.sample.ts.two.sex |>
+    filter(time.point == "t4")
+
+t4_ns <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t4, FUN = length)
+t4_means <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t4, FUN = mean)
+t4_sds <- aggregate(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t4, FUN = sd)
+
+
+# Combine the means and standard deviations into one data frame
+summary_table <- data.frame(
+  Time_Point = rep(c("t1", "t4"), each = 2),
+  Sex = rep(c("Male", "Female"), 2),
+  # Ensure correct means and SDs are placed in the right order
+  n = round(c(t1_ns$sample.avg.ts.hq[t1_means$sex == "Male"], 
+                 t1_ns$sample.avg.ts.hq[t1_means$sex == "Female"], 
+                 t4_ns$sample.avg.ts.hq[t4_means$sex == "Male"], 
+                 t4_ns$sample.avg.ts.hq[t4_means$sex == "Female"])),
+  Mean = round(c(t1_means$sample.avg.ts.hq[t1_means$sex == "Male"], 
+                 t1_means$sample.avg.ts.hq[t1_means$sex == "Female"], 
+                 t4_means$sample.avg.ts.hq[t4_means$sex == "Male"], 
+                 t4_means$sample.avg.ts.hq[t4_means$sex == "Female"]), 2),
+ SD = paste("(", round(c(t1_sds$sample.avg.ts.hq[t1_sds$sex == "Male"], 
+                         t1_sds$sample.avg.ts.hq[t1_sds$sex == "Female"], 
+                         t4_sds$sample.avg.ts.hq[t4_sds$sex == "Male"], 
+                         t4_sds$sample.avg.ts.hq[t4_sds$sex == "Female"]), 2), ")", sep = "")
+)
+
+# Print the nicely formatted table
+kable(summary_table, format = "markdown", col.names = c("Time Point", "Sex", "n", "M", "(SD)"))
+
+contrasts(hq.sample.ts.two.sex.t1$sex) = contr.treatment(nlevels(hq.sample.ts.two.sex.t1$sex))
+contrasts(hq.sample.ts.two.sex.t1$sex)
+
+```
+
+### T-test
+
+```{r}
+#| label: t-test-t/s-by-sex
+
+# Separate data by sex
+male_tl <- hq.sample.ts$sample.avg.ts.hq[hq.sample.ts$sex=='Male'&
+                                        hq.sample.ts$time.point=="t1"]
+female_tl <- hq.sample.ts$sample.avg.ts.hq[hq.sample.ts$sex=='Female'&
+                                        hq.sample.ts$time.point=="t1"]
+non_binary_tl <- hq.sample.ts$sample.avg.ts.hq[hq.sample.ts$sex=='Non-binary/ third gender'&
+                                        hq.sample.ts$time.point=="t1"]
+
+# Perform two-sample t-test
+t_test_result <- t.test(male_tl, female_tl)
+
+# Print the result
+print("Two-Sample t-Test Results:")
+print(t_test_result)
+
+# Perform Levene's test
+leveneTest(sample.avg.ts.hq ~ sex, data = hq.sample.ts.two.sex.t1)
+
+# Shapiro-Wilk test for normality (one group at a time)
+shapiro.test(male_tl)
+shapiro.test(female_tl)
+
+```
+
+### Regression Models
+
+```{r}
+#| label: linear-models-sex-at-each-time-point
+
+model <- lm(sample.avg.ts.hq ~ sex, data=hq.sample.ts.two.sex.t1)
+
+Anova(model, type = "III")
+summary(model)
+#plot(model)
+
+model <- lm(sample.avg.ts.hq ~ sex, data=hq.sample.ts.two.sex.t4)
+
+Anova(model, type = "III")
+summary(model)
+#plot(model)
+
+```
+
+### Plots
+
+```{r}
+#| label: plot-t/s-by-age-and-sex
+
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.sample.ts.two.sex.t1,
+        y_var = "sample.avg.ts.hq",
+        x_var = "age",
+        facet_var = "sex", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Age", # Specify x-axis label
+        plot_title = "Baseline Telomere Length by Age by Gender"
+    )
+
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = hq.sample.ts.two.sex,
+        y_var = "sample.avg.ts.hq",
+        x_var = "age",
+        group = "sex", 
+        y_label = "Telomere length (t/s)", # Specify y-axis label
+        x_label = "Age", # Specify x-axis label
+        plot_title = "Baseline Telomere Length by Age by Gender", # Specify plot title
+        add_regression_line = FALSE, # Add regression line
+     #   h_lines = c(0, 0), # Add horizontal lines 
+     #   h_line_colors = c("red","red") # Specify line colors
+    )
+    
+```
+
+# Individual Variable Assessments
+
+## Blood sample volumes collected
+
+```{r}
+
+# Filter to retain only the larger est.blood.vol for each sample.id
+    filtered.data <- data %>%
+      group_by(sample.id) %>%
+      slice(which.max(est.blood.vol)) %>%
+      ungroup()  # Ungroup after filtering
+
+# Define the axis labels
+axis_labels <- c(0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000)
+
+# Plotting
+ggplot(data = filtered.data, aes(x = est.blood.vol)) +
+  geom_histogram(binwidth = 50, fill = "black", color = "white") +
+    scale_y_continuous(expand = c(0, 0)) +  # Removes extra space on the y-axis
+    scale_x_continuous(breaks = axis_labels) +  # Ensure x-axis ticks and labels correspond correctly
+    labs(title = "Sample Volumes (n = 441)",
+         x = "Estimated blood volume (µl)", 
+         y = "Number of samples") +  # Set axis labels
+    theme_minimal() +  # Removing grey background and gridlines
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 16, 
+                                    face = "bold", 
+                                    hjust = 0.4),  # Center title and adjust size
+          axis.line = element_line(color = "black"),  # Add axis lines
+          axis.text.x = element_text(size = 16, # Increase axis label size
+                                     face = "bold",  
+                                     angle = 90, # Rotate labels vertically
+                                     vjust = 0.5, 
+                                     hjust = 1,
+                                     margin = margin(t = 10, b = 10)), # Adjust margin padding
+          axis.text.y = element_text(size = 16, face = "bold", # Increase axis label size
+                                   margin = margin(r = 10, l = 10)), # Adjust margin padding
+          axis.title.x = element_text(size = 20, face = "bold"),  # Increase x-axis title size
+          axis.title.y = element_text(size = 20, face = "bold"),  # Increase y-axis title size
+          axis.ticks = element_line(color = "black")  # Add tick marks to axes
+          )
+```
+
+## Blood sample volumes used in extractions
+
+```{r}
+
+# Define the axis labels
+axis_labels <- c(0, 25, 50, 75, 100, 125, 150, 175, 200)
+
+# Plotting
+ggplot(data = data, aes(x = blood.vol)) +
+  geom_histogram(binwidth = 25, fill = "black", color = "white") +
+ # scale_x_continuous(expand = c(0, 0)) +  # Removes extra space on the x-axis
+    scale_y_continuous(expand = c(0, 0)) +  # Removes extra space on the y-axis
+    scale_x_continuous(breaks = axis_labels) +  # Ensure x-axis ticks and labels correspond correctly
+    labs(title = "All extracts (n = 842)",
+       x = "Blood volume used in extractions (µl)", 
+       y = "Number of samples") +  # Set axis labels
+    theme_minimal() +  # Removing grey background and gridlines
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 16, 
+                                    face = "bold", 
+                                    hjust = 0.4),  # Center title and adjust size
+          axis.line = element_line(color = "black"),  # Add axis lines
+          axis.text.x = element_text(size = 16, # Increase axis label size
+                                     face = "bold",  
+                                     angle = 90, # Rotate labels vertically
+                                     vjust = 0.5, 
+                                     hjust = 1,
+                                     margin = margin(t = 10, b = 10)), # Adjust margin padding
+          axis.text.y = element_text(size = 16, face = "bold", # Increase axis label size
+                                   margin = margin(r = 10, l = 10)), # Adjust margin padding
+          axis.title.x = element_text(size = 20, face = "bold"),  # Increase x-axis title size
+          axis.title.y = element_text(size = 20, face = "bold"),  # Increase y-axis title size
+          axis.ticks = element_line(color = "black") # Add tick marks to axes
+          )  
+
+
+
+# Plotting
+ggplot(data = hq.extracts, aes(x = blood.vol)) +
+  geom_histogram(binwidth = 25, fill = "black", color = "white") +
+    # scale_x_continuous(expand = c(0, 0)) +  # Removes extra space on the x-axis
+    scale_y_continuous(expand = c(0, 0)) +  # Removes extra space on the y-axis
+    scale_x_continuous(breaks = axis_labels) +  # Ensure x-axis ticks and labels correspond correctly
+    labs(title = "Extracts that met DNA purity criteria (n = 785)",
+       x = "Blood volume used in extractions (µl)", 
+       y = "Number of samples") +  # Set axis labels
+    theme_minimal() +  # Removing grey background and gridlines
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 16, 
+                                    face = "bold", 
+                                    hjust = 0.4),  # Center title and adjust size
+          axis.line = element_line(color = "black"),  # Add axis lines
+          axis.text.x = element_text(size = 16, # Increase axis label size
+                                     face = "bold",  
+                                     angle = 90, # Rotate labels vertically
+                                     vjust = 0.5, 
+                                     hjust = 1,
+                                     margin = margin(t = 10, b = 10)), # Adjust margin padding
+          axis.text.y = element_text(size = 16, face = "bold", # Increase axis label size
+                                   margin = margin(r = 10, l = 10)), # Adjust margin padding
+          axis.title.x = element_text(size = 20, face = "bold"),  # Increase x-axis title size
+          axis.title.y = element_text(size = 20, face = "bold"),  # Increase y-axis title size
+          axis.ticks = element_line(color = "black") # Add tick marks to axes
+          )  
+
+```
+
+## DNA purity metrics
+
+*Excerpt from Thermo Scientific Technical Bulletin*
+<https://dna.uga.edu/wp-content/uploads/sites/51/2019/02/Note-on-the-260_280-and-260_230-Ratios.pdf>
+
+Absorbance measurements made on a spectrophotometer, including any
+Thermo Scientific NanoDrop Spectrophotometer, will include the
+absorbance of all molecules in the sample that absorb at the wavelength
+of interest. Since nucleotides, RNA, ssDNA, and dsDNA all absorb at 260
+nm, they will contribute to the total absorbance of the sample.
+Therefore, to ensure accurate results when using a NanoDrop™
+Spectrophotometer, nucleic acid samples will require purification prior
+to measurement.
+
+### OD 260/280
+
+***Pure DNA has an OD260/OD280 ratio of 1.8. Our criteria are
+OD260/OD280 between 1.7 to 2.0***
+
+**Excerpt from Thermo Scientific Technical Bulletin**: The ratio of
+absorbance at 260 nm and 280 nm is used to assess the purity of DNA and
+RNA. A ratio of \~1.8 is generally accepted as “pure” for DNA; a ratio
+of \~2.0 is generally accepted as “pure” for RNA. If the ratio is
+appreciably lower in either case, it may indicate the presence of
+protein, phenol or other contaminants that absorb strongly at or near
+280 nm.
+
+#### All extracts
+
+```{r}
+#| label: 260/280 Distributions - All Extracts
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plots
+d <- ggplot() +
+    geom_density(data = data, aes(x = OD.260.280),
+               fill = "dodgerblue1", color ="black", alpha = 0.5) +
+    geom_vline(xintercept = 1.7, color = "red", size = .25) + # Adding vertical line
+    geom_vline(xintercept = 2, color = "red", size = .25) # Adding vertical line
+
+# Histogram
+h <- ggplot() +
+    geom_histogram(data = data, aes(x = OD.260.280),
+               fill = "dodgerblue1", color ="black", alpha = 0.5) +
+    geom_vline(xintercept = 1.7, color = "red", size = .25) + # Adding vertical line
+    geom_vline(xintercept = 2, color = "red", size = .25) # Adding vertical line
+ 
+# Arrange density plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+#### Extracts that met DNA purity criteria
+
+```{r}
+#| label: 260/280 Distributions - Within Limits
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plots
+d <- ggplot() +
+    geom_density(data = hq.extracts, aes(x = OD.260.280),
+               fill = "dodgerblue1", color ="black", alpha = 0.5) +
+    geom_vline(xintercept = 1.7, color = "red", size = .25) + # Adding vertical line
+    geom_vline(xintercept = 2, color = "red", size = .25) # Adding vertical line
+
+# Histogram
+h <- ggplot() +
+    geom_histogram(data = hq.extracts, aes(x = OD.260.280),
+               fill = "dodgerblue1", color ="black", alpha = 0.5) +
+    geom_vline(xintercept = 1.7, color = "red", size = .25) + # Adding vertical line
+    geom_vline(xintercept = 2, color = "red", size = .25) # Adding vertical line
+ 
+# Arrange density plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+```{r}
+#| label: 260/280 Scatter
+#| fig-width: 7
+#| fig-height: 5
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "study.id",
+        group = "time.point", 
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Study ID", # Specify x-axis label
+        plot_title = "OD 260/280 by Study ID", # Specify plot title
+        add_regression_line = FALSE, # Add regression line
+        h_lines = c(1.7, 2.2), # Add horizontal lines 
+        h_line_colors = c("red","red") # Specify line colors
+    )
+
+passed.260.280 <- sum(data$OD.260.280 >= 1.7 & data$OD.260.280 <= 2) 
+failed.260.280 <- sum(data$OD.260.280 < 1.7 | data$OD.260.280 > 2)
+
+```
+
+**Summary:** 33 out of 842 (3.9%) of DNA extracts fell outside of the
+accepted 260/280 range of greater than or equal to 1.7 or less than or
+equal to 2. This included 24 extracts at T1, and 9 extracts at T2.
+
+### OD 260/230
+
+***A low OD260/OD230 indicates impurity from the source blood, cutoff is
+greater than or equal to 1.0.***
+
+***Excerpt from Thermo Scientific Technical Bulletin***: This ratio is
+used as a secondary measure of nucleic acid purity. The 260/230 values
+for “pure” nucleic acid are often higher than the respective 260/280
+values. Expected 260/230 values are commonly in the range of 2.0-2.2. If
+the ratio is appreciably lower than expected, it may indicate the
+presence of contaminants which absorb at 230 nm.
+
+*\[From <https://www.denovix.com/tn-130-purity-ratios-explained/>\]*:
+The 260/230 ratio is used to indicate the presence of unwanted organic
+compounds such as Trizol, phenol, Guanidine HCL and guanidine
+thiocyanate. Generally acceptable 260/230 ratios are in the range of 2.0
+– 2.2. Values higher than this may indicate contamination with the
+aforementioned compounds.
+
+#### All Extracts
+
+```{r}
+#| label: 260/230 Distributions - All Extracts
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plot
+d <- ggplot() +
+        geom_density(data = data, aes(x = OD.260.230),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+        geom_vline(xintercept = 1, color = "red", size = .25) # Adding vertical line
+
+# Histogram
+h <- ggplot() +
+        geom_histogram(data = data, aes(x = OD.260.230),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+        geom_vline(xintercept = 1, color = "red", size = .25) # Adding vertical line
+
+# Arrange plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+#### Extracts that met DNA purity criteria
+
+```{r}
+#| label: 260/230 Distributions - Within Limits
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plot
+d <- ggplot() +
+        geom_density(data = hq.extracts, aes(x = OD.260.230),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+        geom_vline(xintercept = 1, color = "red", size = .25) + # Adding vertical line
+        geom_vline(xintercept = 4, color = "red", size = .25) # Adding vertical line
+
+# Histogram
+h <- ggplot() +
+        geom_histogram(data = hq.extracts, aes(x = OD.260.230),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+        geom_vline(xintercept = 1, color = "red", size = .25)  + # Adding vertical line
+        geom_vline(xintercept = 4, color = "red", size = .25) # Adding vertical line
+
+# Arrange plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+### Scatter Plots
+
+```{r}
+#| label: 260/230
+#| fig-width: 7
+#| fig-height: 5
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        x_var = "study.id", 
+        y_var = "OD.260.230",
+        group = "time.point", 
+      #  x_limits = c(, ), # Set x-axis limits
+        y_limits = c(-180, 50), # Set y-axis limits (optional, adjust as needed)
+        x_label = "Study ID", # Specify x-axis label
+        y_label = "OD 260/230", # Specify y-axis label
+        plot_title = "OD 260/230 by Study ID", # Specify plot title
+        add_regression_line = FALSE,, # Add regression line
+        h_lines = c(1, 4), # Add horizontal lines 
+        h_line_colors = c("red","orange")
+    )
+    
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        x_var = "study.id", 
+        y_var = "OD.260.230",
+        group = "time.point", 
+      #  x_limits = c(0, 200), # Set x-axis limits
+        y_limits = c(0, 40), # Set y-axis limits (optional, adjust as needed)
+        x_label = "Study ID", # Specify x-axis label
+        y_label = "OD 260/230", # Specify y-axis label
+        plot_title = "OD 260/230 by Study ID", # Specify plot title
+        add_regression_line = FALSE, # Add regression line
+        h_lines = c(1, 4), # Add horizontal lines 
+        h_line_colors = c("red","orange")
+    )
+    
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        x_var = "study.id", 
+        y_var = "OD.260.230",
+        group = "time.point", 
+      #  x_limits = c(0, 200), # Set x-axis limits
+        y_limits = c(0, 10), # Set y-axis limits (optional, adjust as needed)
+        x_label = "Study ID", # Specify x-axis label
+        y_label = "OD 260/230", # Specify y-axis label
+        plot_title = "OD 260/230 by Study ID", # Specify plot title
+        add_regression_line = FALSE, # Add regression line
+        h_lines = c(1, 4), # Add horizontal lines 
+        h_line_colors = c("red","orange")
+    )
+
+passed.260.230 <- sum(data$OD.260.230 >= 1) 
+failed.260.230 <- sum(data$OD.260.230 < 1)
+
+
+  OD.260.230.outliers <- data |>
+        rstatix::identify_outliers(OD.260.230)
+  
+  OD.260.230.outliers <- data |>
+      filter (OD.260.230 >= 1)|>
+        rstatix::identify_outliers(OD.260.230)
+  
+  OD.260.230.outliers <- hq.extracts |>
+        rstatix::identify_outliers(OD.260.230)
+    
+  OD.260.230.outliers <- OD.260.230.outliers|> 
+               dplyr::select(study.id,
+                      sample.id,
+                      time.point,
+                      OD.260.230, 
+                      )
+
+  sum(OD.260.230.outliers$OD.260.230 > 3.2)
+  sum(OD.260.230.outliers$OD.260.230 > 4)
+  
+```
+
+**Summary:** 6 out of 842 (0.7%) of DNA extracts fell below the 260/230
+cutoff of 1. 20 extracts had a OD260/230 value over 4, and 42 had a
+value over 3.2. 96 extracts were identified as outliers using the
+identify_outliers function from the rstatix package, which deems values
+above Q3 + 1.5xIQR or below Q1 - 1.5xIQR as outliers. We opted to use
+the data conservative cutoff of \<= 4.
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        x_var = "ul.DNA.20ng.30ul", 
+        y_var = "OD.260.230",
+        group = "time.point", 
+      #  x_limits = c(, ), # Set x-axis limits
+        y_limits = c(-10, 35), # Set y-axis limits (optional, adjust as needed)
+        x_label = "ul.DNA.20ng.30ul", # Specify x-axis label
+        y_label = "OD 260/230", # Specify y-axis label
+        plot_title = "OD 260/230 by ul.DNA.20ng.30ul", # Specify plot title
+        add_regression_line = FALSE,, # Add regression line
+        h_lines = c(1.0, 4), # Horizontal lines 
+        h_line_colors = c("red", "orange") # Colors for the horizontal lines
+    )
+    
+# # Call the plotting function
+# # specify data, variables, limits, labels, and lines
+#     grouped_interactive_scatter_plot(
+#         data = data,
+#         x_var = "rxn.DNA.conc", 
+#         y_var = "OD.260.230",
+#         group = "time.point", 
+#       #  x_limits = c(, ), # Set x-axis limits
+#         y_limits = c(-10, 35), # Set y-axis limits (optional, adjust as needed)
+#         x_label = "DNA/reaction", # Specify x-axis label
+#         y_label = "OD 260/230", # Specify y-axis label
+#         plot_title = "OD 260/230 by DNA/reaction", # Specify plot title
+#         add_regression_line = FALSE,, # Add regression line
+#         h_lines = c(1.0, 4), # Horizontal lines 
+#         h_line_colors = c("red", "orange") # Colors for the horizontal lines
+#     )
+#     
+
+```
+
+## DNA Concentration
+
+All Extracts vs. Extracts that met DNA purity criteria
+
+```{r}
+#| label: DNA Concentration Distributions - All Extracts
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plot
+d <- ggplot() +
+    geom_density(data = data, aes(x = DNA.conc),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+    geom_density(data = hq.extracts, aes(x = DNA.conc),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) 
+
+# Histogram
+h <- ggplot() +
+    geom_histogram(data = data, aes(x = DNA.conc),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+    geom_histogram(data = hq.extracts, aes(x = DNA.conc),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) 
+
+# Arrange plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+```{r}
+#| label: DNA Concentration Scatter
+#| fig-width: 7
+#| fig-height: 5
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        y_var = "DNA.conc",
+        x_var = "study.id",
+        group = "time.point", 
+        y_label = "DNA Concentration", # Specify y-axis label
+        x_label = "Study ID", # Specify x-axis label
+        plot_title = "DNA Concentration by Study ID", # Specify plot title
+        add_regression_line = FALSE
+    )
+
+```
+
+## T/S Extracts
+
+All Extracts vs. Extracts that met DNA purity criteria
+
+```{r}
+#| label: t/s Distributions
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plot
+d <- ggplot() +
+    geom_density(data = data, aes(x = avg.ts.orig),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+    geom_density(data = hq.extracts, aes(x = avg.ts.hq),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+    scale_x_continuous(name = "Average T/S value")  # Add a custom label for the x-axis
+  
+
+# Histogram
+h <- ggplot() +
+    geom_histogram(data = data, aes(x = avg.ts.orig),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+    geom_histogram(data = hq.extracts, aes(x = avg.ts.hq),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) +
+    scale_x_continuous(name = "Average T/S value") # Add a custom label for the x-axis
+
+# Arrange plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+```{r}
+#| label: t/s Scatter Plot
+#| fig-width: 7
+#| fig-height: 5
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "study.id",
+        group = "time.point", 
+        y_label = "Extract Avg T/S", # Specify y-axis label
+        x_label = "Study ID", # Specify x-axis label
+        plot_title = "Extract Avg T/S by Study ID", # Specify plot title
+        add_regression_line = FALSE
+    )
+
+```
+
+## Transportation Duration
+
+```{r}
+#| label: transportation-duration
+#| fig-width: 7
+#| fig-height: 3.5
+
+# Call the plotting function
+# specify data, variables, limits, labels, and lines
+    grouped_interactive_scatter_plot(
+        data = data,
+        y_var = "transportation.duration",
+        x_var = "study.id",
+        group = "time.point",
+        y_label = "Hours from collection to freezing", # Specify y-axis label
+        x_label = "Study ID", # Specify x-axis label
+        plot_title = "Transportation Duration by Study ID", # Specify plot title
+        add_regression_line = FALSE # Add regression line
+    )
+  
+```
+
+```{r}
+#| label: transportation duration distributions
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plots
+d <- ggplot() +
+        geom_density(data = sample.data, aes(x = transportation.duration),
+               fill = "skyblue", color = "black", alpha = 0.5) + 
+        geom_density(data = hq.sample.ts, aes(x = transportation.duration),
+               fill = "dodgerblue1", color = "black", alpha = 0.5)
+
+# Histogram
+h <- ggplot() +
+        geom_histogram(data = sample.data, aes(x = transportation.duration),
+               fill = "skyblue", color = "black", alpha = 0.5) + 
+        geom_histogram(data = hq.sample.ts, aes(x = transportation.duration),
+               fill = "dodgerblue1", color = "black", alpha = 0.5)
+# Arrange density plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+## Temperature
+
+### Collection temperature by collection date
+
+```{r fig.width=10, fig.height=3.5, out.width='100%'}
+#| label: collection-temp-by-collection-date
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   interactive_scatter_plot(
+        data = sample.data,
+        y_var = "collection.max.temp",
+        x_var = "collection.date",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Max temperature in collection location (°F)", # Specify y-axis label
+        x_label = "Collection Date", # Specify x-axis label
+        plot_title = "Maximum Temperature in Collection Location by Collection Date",
+        add_regression_line = FALSE # Add regression line
+      )
+```
+
+### Davis temperature by delivery date
+
+```{r fig.width=10, fig.height=3.5, out.width='100%'}
+#| label: davis-temp-by-delivery-date
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   interactive_scatter_plot(
+        data = sample.data,
+        y_var = "davis.max.temp",
+        x_var = "freezer.date",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Max Davis temperature (°F)", # Specify y-axis label
+        x_label = "Delivery date", # Specify x-axis label
+        plot_title = "Maximum Temperature in Davis by Delivery Date",
+        add_regression_line = FALSE # Add regression line
+      )
+    
+```
+
+### Collection temperature by Davis temperature
+
+```{r}
+#| label: collection-temp-by-davis-temp
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   interactive_scatter_plot(
+        data = sample.data,
+        y_var = "collection.max.temp",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Max temperature in collection location (°F)", # Specify y-axis label
+        x_label = "Max temperature in Davis (°F)",, # Specify x-axis label
+        plot_title = "Maximum Temperature Correlation",
+        add_regression_line = FALSE # Add regression line
+      )
+
+    pearson_correlations(sample.data,"collection.max.temp", "davis.max.temp")
+    
+```
+
+### Davis max temperature distribution
+
+```{r}
+#| label: davis max temperature histogram
+#| fig-width: 7
+#| fig-height: 3
+
+
+# Density plots
+d <- ggplot() +
+        geom_density(data = sample.data, aes(x = davis.max.temp),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+        geom_density(data = hq.sample.ts, aes(x = davis.max.temp),
+               fill = "dodgerblue1", color = "black", alpha = 0.5)
+
+# Histogram
+h <- ggplot() +
+        geom_histogram(data = sample.data, aes(x = davis.max.temp),
+               fill = "skyblue", color = "black", alpha = 0.5) +
+            geom_histogram(data = hq.sample.ts, aes(x = davis.max.temp),
+               fill = "dodgerblue1", color = "black", alpha = 0.5) 
+
+# Arrange density plots
+grid.arrange(d, h, ncol = 2)
+
+rm(d,h)
+
+```
+
+# Scatter Plots
+
+## Blood Volume
+
+### DNA concentration
+
+**Summary:** The estimated volume of the blood collected by the
+participant and used in the DNA extraction both positively predict the
+resultant DNA concentration.
+
+#### Pure Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "DNA.conc",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "DNA concentration (ng/µl)", # Specify y-axis label
+        x_label = "Estimated blood sample volume (µl)", # Specify x-axis label
+        plot_title = "DNA Concentration by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "est.blood.vol", "DNA.conc")
+    
+# Call the correlation function
+  spearman_correlations(hq.extracts, "est.blood.vol", "DNA.conc")
+
+```
+
+#### All Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   custom_scatter_plot(
+        data = data,
+        y_var = "DNA.conc",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "DNA concentration (ng/µl)", # Specify y-axis label
+        x_label = "Estimated blood sample volume (µl)", # Specify x-axis label
+        plot_title = "DNA Concentration by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "est.blood.vol", "DNA.conc")
+    
+# Call the correlation function
+  spearman_correlations(data, "est.blood.vol", "DNA.conc")
+
+```
+
+### 260/280
+
+**Summary:** The estimated volume of the blood collected by the
+participant and used in the DNA extraction both appear to positively
+predict the 260/280 value.
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+  custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Sample blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "est.blood.vol", "OD.260.280")
+  
+# Call the correlation function
+  spearman_correlations(hq.extracts, "est.blood.vol", "OD.260.280")
+
+```
+
+#### Pure Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+  custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Sample blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "est.blood.vol", "OD.260.280")
+  
+# Call the correlation function
+  spearman_correlations(data, "est.blood.vol", "OD.260.280")
+  
+```
+
+### 260/230
+
+**Summary:** The estimated volume of blood collected by the participant
+and used in the DNA extraction both appear to negatively predict 260/230
+values, but this includes the high 260/230 values.
+
+#### Pure Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+  custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Sample blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "est.blood.vol", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "est.blood.vol", "OD.260.230")
+  
+```
+
+#### All Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+  custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Sample blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "est.blood.vol", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(data, "est.blood.vol", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+**Summary:** Fortunately, the estimated volume of the blood collected by
+the participant, the volume of blood used in the DNA extraction, and DNA
+concentration do not appear to affect t/s values.
+
+#### Pure Extracts
+
+```{r}
+#| label: blood-vol-by-extract-ts
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Estimated blood sample volume (µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "est.blood.vol", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "est.blood.vol", "avg.ts.hq")
+
+```
+
+#### All Extracts
+
+```{r}
+#| label: blood-vol-by-extract-ts-all-extracts
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "est.blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Estimated blood sample volume (µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Sample Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "est.blood.vol", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "est.blood.vol", "avg.ts.orig")
+
+```
+
+## Extract Volume
+
+### DNA concentration
+
+#### Pure extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "DNA.conc",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "DNA concentration", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "DNA Concentration by Extract Blood Volume" # Specify plot title
+      )
+    
+# Call the correlation function
+  pearson_correlations(hq.extracts,"blood.vol", "DNA.conc")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "blood.vol", "DNA.conc")
+
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "DNA.conc",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "DNA concentration", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "DNA Concentration by Extract Blood Volume" # Specify plot title
+      )
+    
+# Call the correlation function
+  pearson_correlations(data,"blood.vol", "DNA.conc")
+
+# Call the correlation function
+  spearman_correlations(data, "blood.vol", "DNA.conc")
+
+```
+
+### 260/280
+
+#### Pure extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by Extract Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "blood.vol", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "blood.vol", "OD.260.280")
+
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by Extract Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "blood.vol", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(data, "blood.vol", "OD.260.280")
+
+```
+
+### 260/230
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by Extract Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "blood.vol", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "blood.vol", "OD.260.230")
+  
+```
+
+#### All extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by Extract Blood Volume" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "blood.vol", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(data, "blood.vol", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Pure extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Extract Blood Volume" # Specify plot title
+      )
+    
+# Call the correlation function
+  pearson_correlations(hq.extracts,"blood.vol", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "blood.vol", "avg.ts.hq")
+  
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "blood.vol",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Estimated extract blood volume (µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Extract Blood Volume" # Specify plot title
+      )
+    
+# Call the correlation function
+  pearson_correlations(data,"blood.vol", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "blood.vol", "avg.ts.orig")
+  
+```
+
+## DNA Concentration
+
+### 260/280
+
+#### Pure extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "DNA.conc", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "DNA.conc", "OD.260.280")
+  
+```
+
+##### Regression models 
+
+```{r}
+
+  model<-lm(DNA.conc~OD.260.280 + I(OD.260.280^2), data = hq.extracts)
+  
+  Anova(model)
+  summary(model)
+    
+  report(model)
+  
+  model<-lm(avg.ts.hq ~ OD.260.280 + I(OD.260.280^2), data = hq.extracts)
+ 
+  
+  Anova(model)
+  summary(model)
+  
+  # Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "OD.260.280",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S", # Specify y-axis label
+        x_label = "OD.260.280", # Specify x-axis label
+        plot_title = "" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "DNA.conc", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "DNA.conc", "OD.260.280")
+  
+```
+
+#### All extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "OD 260/280 by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "DNA.conc", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(data, "DNA.conc", "OD.260.280")
+
+```
+
+### 260/230
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "DNA.conc", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "DNA.conc", "OD.260.230")
+```
+
+#### All extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "OD 260/230 by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "DNA.conc", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(data, "DNA.conc", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Pure extracts
+
+```{r}
+#| label: extract-ts-by-DNA-concentration
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"DNA.conc", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "DNA.conc", "avg.ts.hq")
+  
+  
+
+# Plot to look at individual participants extracts
+# p <- ggplot(hq.extracts, 
+#             aes(x = z.DNA.conc, y = avg.ts.orig, 
+#                 group = interaction(study.id, time.point))) +
+#   geom_point(alpha = 0.6) +  # Scatter plot of observed data
+#   geom_line(aes(color = as.factor(study.id)), size = 0.5, alpha = 0.6) +  # Lines linking the points for each subject
+#   scale_x_continuous(limits = c(-4.25, 4.25))+ 
+#   labs(title = "Extract T/S by Extract DNA concentration",
+#        x = "DNA Concentration (z-score)",
+#        y = "Extract T/S (run avg)",
+#        color = "Study ID") +
+#   theme_minimal() +
+#   theme(legend.position = "none") +
+#   scale_color_viridis_d()  # Use a colorblind-friendly palette
+
+# Print the interactive plot
+# ggplotly(p)
+
+```
+
+#### All extracts
+
+```{r}
+#| label: all-extract-ts-by-DNA-concentration
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "DNA.conc",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "DNA concentration (ng/µl)", # Specify x-axis label
+        plot_title = "Extract T/S Value by DNA Concentration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"DNA.conc", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "DNA.conc", "avg.ts.orig")
+  
+```
+
+## 260/280
+
+### Extract T/S
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "OD.260.280",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S", # Specify y-axis label
+        x_label = "OD 260/280", # Specify x-axis label
+        plot_title = "Extract T/S by OD 260/280" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "avg.ts.hq", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "avg.ts.hq", "OD.260.280")
+  
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "OD.260.280",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S", # Specify y-axis label
+        x_label = "OD 260/280", # Specify x-axis label
+        plot_title = "Extract T/S by OD 260/280" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "avg.ts.orig", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(data, "avg.ts.orig", "OD.260.280")
+  
+  
+```
+
+## 260/230
+
+### Extract T/S
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "OD.260.230",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S", # Specify y-axis label
+        x_label = "OD 260/230", # Specify x-axis label
+        plot_title = "Extract T/S by OD 260/230" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts, "avg.ts.hq", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "avg.ts.hq", "OD.260.230")
+  
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+ custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "OD.260.230",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Extract T/S", # Specify y-axis label
+        x_label = "OD 260/230", # Specify x-axis label
+        plot_title = "Extract T/S by OD 260/230" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data, "avg.ts.orig", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(data, "avg.ts.orig", "OD.260.230")
+  
+```
+
+## Transportation Duration
+
+### DNA Concentration
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "DNA.conc",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+     #   x_limits = c(30,110), # Set x-axis limits
+        y_label = "DNA Concentration", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "DNA Concentration by Transportation Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"transportation.duration", "DNA.conc")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "transportation.duration", "DNA.conc")
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+custom_scatter_plot(
+        data = data,
+        y_var = "DNA.conc",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+     #   x_limits = c(30,110), # Set x-axis limits
+        y_label = "DNA Concentration", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "DNA Concentration by Transportation Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"transportation.duration", "DNA.conc")
+
+# Call the correlation function
+  spearman_correlations(data, "transportation.duration", "DNA.conc")
+  
+#  grid.arrange(p1,p2,ncol=2)
+  
+```
+
+### 260/280
+
+#### Pure Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/280 by Transportion Duration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"transportation.duration", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts,"transportation.duration", "OD.260.280")
+  
+
+```
+
+#### Pure extracts with transportation duration restricted to between 10 and 40 hours
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts |>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+        y_var = "OD.260.280",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/280 by Transportion Duration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "OD.260.280")
+  
+```
+
+#### All Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/280 by Transportion Duration" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"transportation.duration", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(data,"transportation.duration", "OD.260.280")
+  
+```
+
+### 260/230
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function}
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/230 by Transportation Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"transportation.duration", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts,"transportation.duration", "OD.260.230")
+  
+```
+
+#### Pure extracts with transportation duration restricted to between 10 and 40 hours
+
+```{r}
+# Call the plotting function}
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+        y_var = "OD.260.230",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/230 by Transportation Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "OD.260.230")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function}
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "OD 260/230 by Transportation Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"transportation.duration", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(data,"transportation.duration", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Pure Extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"transportation.duration", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "transportation.duration", "avg.ts.hq")
+  
+```
+
+#### Pure extracts with transportation duration restricted to between 10 and 40 hours
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+        y_var = "avg.ts.hq",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "avg.ts.hq")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"transportation.duration", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "transportation.duration", "avg.ts.orig")
+  
+```
+
+### Sample T/S
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Sample T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.sample.ts,"transportation.duration", "sample.avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.sample.ts, "transportation.duration", "sample.avg.ts.hq")
+  
+```
+
+#### Pure extracts with transportation duration restricted to between 10 and 40 hours
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.sample.ts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+        y_var = "sample.avg.ts.hq",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Sample T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.sample.ts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "sample.avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.sample.ts|>
+            filter(transportation.duration > 10 & transportation.duration < 40),
+            "transportation.duration", "sample.avg.ts.hq")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = sample.data,
+        y_var = "sample.avg.ts.orig",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Sample T/S Value by Transportion Duration"
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data,"transportation.duration", "sample.avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(sample.data, "transportation.duration", "sample.avg.ts.orig")
+  
+```
+
+## Collection Temp
+
+### DNA Concentration
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "DNA.conc",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+     #   x_limits = c(30,110), # Set x-axis limits
+        y_label = "DNA concentration", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "DNA Concentration by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"collection.max.temp", "DNA.conc")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "collection.max.temp", "DNA.conc")
+  
+```
+
+#### ALl Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "DNA.conc",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+     #   x_limits = c(30,110), # Set x-axis limits
+        y_label = "DNA concentration", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "DNA Concentration by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"collection.max.temp", "DNA.conc")
+                            
+# Call the correlation function
+  spearman_correlations(data, "collection.max.temp", "DNA.conc")
+  
+```
+
+### 260/280
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+      #  x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/280 by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"collection.max.temp", "OD.260.280")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "collection.max.temp", "OD.260.280")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+      #  x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/280 by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"collection.max.temp", "OD.260.280")
+
+# Call the correlation function
+  spearman_correlations(data, "collection.max.temp", "OD.260.280")
+  
+```
+
+### 260/230
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/230 by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"collection.max.temp", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts, "collection.max.temp", "OD.260.230")
+  
+```
+
+#### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/230 by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"collection.max.temp", "OD.260.230")
+                            
+# Call the correlation function
+  spearman_correlations(data, "collection.max.temp", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Pure extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"collection.max.temp", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "collection.max.temp", "avg.ts.hq")
+  
+```
+
+#### All extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "avg.ts.orig",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "Extract T/S Value by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"collection.max.temp", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "collection.max.temp", "avg.ts.orig")
+  
+```
+
+### Sample T/S
+
+#### Across Timepoints
+
+##### Pure extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.sample.ts,"collection.max.temp", "sample.avg.ts.hq")
+    
+# Call the correlation function
+  spearman_correlations(hq.sample.ts, "collection.max.temp", "sample.avg.ts.hq")
+ 
+```
+
+##### All extracts
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = sample.data,
+        y_var = "sample.avg.ts.orig",
+        x_var = "collection.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Temperature in Collection Location"
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data,"collection.max.temp", "sample.avg.ts.orig")
+    
+# Call the correlation function
+  spearman_correlations(sample.data, "collection.max.temp", "sample.avg.ts.orig")
+ 
+```
+
+#### By Timepoint
+
+##### Pure extracts
+
+```{r}
+
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "collection.max.temp",
+        facet_var = "time.point", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Max collection location temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Temperature in Collection Location"
+    )
+
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "collection.max.temp", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "collection.max.temp", "sample.avg.ts.hq")
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "collection.max.temp", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "collection.max.temp", "sample.avg.ts.hq")
+    
+```
+
+## Davis Delivery Temp
+
+### Transportation Duration
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+   interactive_scatter_plot(
+        data = sample.data,
+        y_var = "davis.max.temp",
+        x_var = "transportation.duration",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Maximum Davis temperature (°F)", # Specify y-axis label
+        x_label = "Time from collection to freezing (hrs)", # Specify x-axis label
+        plot_title = "Maximum Davis Temperature by Transportation Durtation",
+        add_regression_line = FALSE # Add regression line
+      )
+
+    pearson_correlations(sample.data,"transportation.duration", "davis.max.temp")  
+    
+    spearman_correlations(sample.data,"transportation.duration", "davis.max.temp")  
+ 
+```
+
+### DNA Concentration
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "DNA.conc",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "DNA concentration", # Specify y-axis label
+        x_label = "Miximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "DNA Concentration by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"davis.max.temp", "DNA.conc")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "davis.max.temp", "DNA.conc")
+
+```
+
+### 260/280
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.280",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+      #  x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/280 by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"davis.max.temp", "OD.260.280")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "davis.max.temp", "OD.260.280")
+
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.280",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+      #  x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/280 by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"davis.max.temp", "OD.260.280")
+
+# Call the correlation function
+  spearman_correlations(data, "davis.max.temp", "OD.260.280")
+
+```
+
+### 260/230
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.extracts,
+        y_var = "OD.260.230",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Miximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/230 by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"davis.max.temp", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "davis.max.temp", "OD.260.230")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = data,
+        y_var = "OD.260.230",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Miximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "OD 260/230 by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"davis.max.temp", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(data, "davis.max.temp", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Across timepoints
+
+##### Pure Extracts
+
+```{r}
+ # Call the plotting function
+ # specify data, variables, limits, and labels
+     custom_scatter_plot(
+         data = hq.extracts,
+         y_var = "avg.ts.hq",
+         x_var = "davis.max.temp",
+         colors = c("dodgerblue1"), # Specify your desired colors
+         y_label = "Extract T/S (run avg)", # Specify y-axis label
+         x_label = "Maximum Davis temperature (°F) ", # Specify x-axis label
+         plot_title = "Extract T/S Value by Maximum Delivery-Day Temperature in Davis"
+       ) +  # Minimal theme
+    theme(panel.grid.major = element_blank(),  # Remove major gridlines
+          panel.grid.minor = element_blank(),  # Remove minor gridlines
+          panel.background = element_blank())  # Remove background grid
+  
+ # Call the correlation function
+   pearson_correlations(hq.extracts,"davis.max.temp", "avg.ts.hq")
+
+ # Call the correlation function
+   spearman_correlations(hq.extracts,"davis.max.temp", "avg.ts.hq")
+
+```
+
+##### All Extracts
+
+```{r}
+ # Call the plotting function
+ # specify data, variables, limits, and labels
+     custom_scatter_plot(
+         data = data,
+         y_var = "avg.ts.orig",
+         x_var = "davis.max.temp",
+         colors = c("dodgerblue1"), # Specify your desired colors
+         y_label = "Extract T/S (run avg)", # Specify y-axis label
+         x_label = "Maximum Davis temperature (°F) ", # Specify x-axis label
+         plot_title = "Extract T/S Value by Maximum Delivery-Day Temperature in Davis"
+       ) +  # Minimal theme
+    theme(panel.grid.major = element_blank(),  # Remove major gridlines
+          panel.grid.minor = element_blank(),  # Remove minor gridlines
+          panel.background = element_blank())  # Remove background grid
+  
+ # Call the correlation function
+   pearson_correlations(data,"davis.max.temp", "avg.ts.orig")
+
+ # Call the correlation function
+   spearman_correlations(data,"davis.max.temp", "avg.ts.orig")
+
+```
+
+#### By Timepoint
+
+##### Pure Extracts
+
+```{r}
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.extracts,
+        y_var = "avg.ts.hq",
+        x_var = "davis.max.temp",
+        facet_var = "time.point", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Delivery-Day Temperature in Davis"
+    ) 
+
+    pearson_correlations(hq.extracts |>
+        filter(time.point=="t1"), "davis.max.temp", "avg.ts.hq")
+ 
+    spearman_correlations(hq.extracts |>
+        filter(time.point=="t1"), "davis.max.temp", "avg.ts.hq")
+    
+    pearson_correlations(hq.extracts |>
+        filter(time.point=="t4"), "davis.max.temp", "avg.ts.hq")
+    
+    spearman_correlations(hq.extracts |>
+        filter(time.point=="t4"), "davis.max.temp", "avg.ts.hq")
+    
+```
+
+### Sample T/S
+
+#### Across Timepoints
+
+##### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.sample.ts,"davis.max.temp", "sample.avg.ts.hq")
+                            
+# Call the correlation function
+  spearman_correlations(hq.sample.ts, "davis.max.temp", "sample.avg.ts.hq")
+
+```
+
+##### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    custom_scatter_plot(
+        data = sample.data,
+        y_var = "sample.avg.ts.orig",
+        x_var = "davis.max.temp",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Delivery-Day Temperature in Davis"
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data,"davis.max.temp", "sample.avg.ts.orig")
+                            
+# Call the correlation function
+  spearman_correlations(sample.data, "davis.max.temp", "sample.avg.ts.orig")
+
+```
+
+#### By Timepoint
+
+##### Pure Extracts
+
+```{r}
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.sample.ts,
+        y_var = "sample.avg.ts.hq",
+        x_var = "davis.max.temp",
+        facet_var = "time.point", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Maximum Davis temperature (°F)", # Specify x-axis label
+        plot_title = "Telomere Length by Maximum Delivery-Day Temperature in Davis"
+    ) 
+
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "davis.max.temp", "sample.avg.ts.hq")
+ 
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "davis.max.temp", "sample.avg.ts.hq")
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "davis.max.temp", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "davis.max.temp", "sample.avg.ts.hq")
+    
+```
+
+## Cold pack condition
+
+### Collection Temp
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = sample.data |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "collection.max.temp",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired color
+        y_label = "Max temperature in collection location (°F)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+    
+# Call the correlation function
+  pearson_correlations(sample.data, "collection.max.temp", "cold.pack.dummy.reversed")
+  
+# Call the correlation function
+  spearman_correlations(sample.data, "collection.max.temp", "cold.pack.dummy.reversed")
+  
+```
+
+### Davis Temperature
+
+```{r}
+
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = sample.data|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "davis.max.temp",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Maximum Davis temperature (°F)", # Specify y-axis label
+        x_label = "Cold pack condition",, # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data, "davis.max.temp", "cold.pack.dummy.reversed")
+  
+# Call the correlation function
+  spearman_correlations(sample.data, "davis.max.temp", "cold.pack.dummy.reversed")
+  
+```
+
+### Transportation duration
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = sample.data|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "transportation.duration",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Transportation durtation (hrs)", # Specify y-axis label
+        x_label = "Cold pack condition",, # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data,"transportation.duration", "cold.pack.dummy.reversed")  
+
+# Call the correlation function
+  spearman_correlations(sample.data, "transportation.duration", "cold.pack.dummy.reversed")
+    
+```
+
+
+### 260/280
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = hq.extracts|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "OD.260.280",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = "" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"cold.pack.dummy.reversed", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(hq.extracts,"cold.pack.dummy.reversed", "OD.260.280")
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = data |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "OD.260.280",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "OD 260/280", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = "" # Specify plot title
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"cold.pack.dummy.reversed", "OD.260.280")
+                            
+# Call the correlation function
+  spearman_correlations(data,"cold.pack.dummy.reversed", "OD.260.280")
+  
+
+```
+
+### 260/230
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function}
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = hq.extracts|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "OD.260.230",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"transportation.duration", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts,"transportation.duration", "OD.260.230")
+```
+
+### All Extracts
+
+```{r}
+# Call the plotting function}
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = data|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "OD.260.230",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+    #    x_limits = c(30,110), # Set x-axis limits
+        y_label = "OD 260/230", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = "OD 260/230 by Cold Pack Condition"
+      )  
+  
+# Call the correlation function
+  pearson_correlations(data,"transportation.duration", "OD.260.230")
+
+# Call the correlation function
+  spearman_correlations(data,"transportation.duration", "OD.260.230")
+  
+```
+
+### Extract T/S
+
+#### Pure Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = hq.extracts|>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "avg.ts.hq",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.extracts,"cold.pack.dummy.reversed", "avg.ts.hq")
+
+# Call the correlation function
+  spearman_correlations(hq.extracts, "cold.pack.dummy.reversed", "avg.ts.hq")
+  
+```
+
+#### All Extracts
+
+```{r}
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = data |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "avg.ts.orig",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+       # x_limits = c(30,110), # Set x-axis limits
+        y_label = "Extract T/S (run avg)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(data,"cold.pack.dummy.reversed", "avg.ts.orig")
+
+# Call the correlation function
+  spearman_correlations(data, "cold.pack.dummy.reversed", "avg.ts.orig")
+  
+```
+
+### Sample T/S
+
+#### Across Timepoints
+
+##### Pure Extracts
+
+```{r}
+            
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = hq.sample.ts |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "sample.avg.ts.hq",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(hq.sample.ts,"cold.pack.dummy.reversed", "sample.avg.ts.hq")
+    
+# Call the correlation function
+  spearman_correlations(hq.sample.ts, "cold.pack.dummy.reversed", "sample.avg.ts.hq")
+ 
+```
+
+##### All Extracts
+
+```{r}
+            
+# Call the plotting function
+# specify data, variables, limits, and labels
+    cp_custom_boxplot(
+        data = sample.data |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "sample.avg.ts.orig",
+        x_var = "cold.pack.condition.reversed",
+        colors = c("dodgerblue1"), # Specify your desired colors
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+      )
+
+# Call the correlation function
+  pearson_correlations(sample.data,"cold.pack.dummy.reversed", "sample.avg.ts.orig")
+    
+# Call the correlation function
+  spearman_correlations(sample.data, "cold.pack.dummy.reversed", "sample.avg.ts.orig")
+ 
+```
+
+#### By Timepoint
+
+#### All Extracts
+
+```{r}
+
+# Create a customized scatter plot with faceting
+  facet_scatter_plot(
+        data = hq.sample.ts |>
+            filter(!is.na(cold.pack.condition.reversed)),
+        y_var = "sample.avg.ts.hq",
+        x_var = "cold.pack.dummy.reversed",
+        facet_var = "time.point", # The variable used for faceting
+        colors = "blue",
+        y_label = "Sample T/S (extract avg)", # Specify y-axis label
+        x_label = "Cold pack condition", # Specify x-axis label
+        plot_title = ""
+    )
+
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "cold.pack.dummy.reversed", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t1"), "cold.pack.dummy.reversed", "sample.avg.ts.hq")
+    
+    pearson_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "cold.pack.dummy.reversed", "sample.avg.ts.hq")
+    
+    spearman_correlations(hq.sample.ts |>
+        filter(time.point=="t4"), "cold.pack.dummy.reversed", "sample.avg.ts.hq")
+    
+```
+
+# Clots influence on external validity
+
+## Time 1 - Age and sample T/S with and without clots
+
+```{r}
+t1.clots <- hq.sample.ts|>
+     filter(time.point=="t1")|>
+     dplyr::select(study.id,
+                   sample.avg.ts.hq,
+                   age,
+                   num.clots
+                   )
+
+# Call the correlation function
+  pearson_correlations(t1.clots |>
+                            filter(num.clots == 0), 
+                        "age", "sample.avg.ts.hq")
+  
+# Call the correlation function
+  pearson_correlations(t1.clots |>
+                            filter(num.clots != 0), 
+                        "age", "sample.avg.ts.hq")
+```
+
+Fisher's t-tests comparing the correlation between sample T/S values and
+age at baseline in samples with extracts that did or did not contain
+clots, *t*(0), *p*=0.5
+
+## Time 4 - Age and sample T/S with and without clots
+
+```{r}
+
+t4.clots <- hq.sample.ts|>
+     filter(time.point=="t4")|>
+     dplyr::select(study.id,
+                   sample.avg.ts.hq,
+                   age,
+                   num.clots
+                   )
+
+# Call the correlation function
+  pearson_correlations(t4.clots |>
+                            filter(num.clots == 0), 
+                        "age", "sample.avg.ts.hq")
+  
+# Call the correlation function
+  pearson_correlations(t4.clots |>
+                            filter(num.clots != 0), 
+                        "age", "sample.avg.ts.hq")
+  
+  
+ clots.wide <- inner_join(t1.clots,
+                          t4.clots, 
+                          by = c("study.id"="study.id")
+                        )
+```
+
+Fisher's t-tests comparing the correlation between sample T/S values and
+age at baseline in samples with extracts that did or did not contain
+clots, *t*(-1.02), *p*=0.154
+
+## Sample T/S at Time 1 and Time 4 with and without clots
+
+```{r}
+
+# Call the correlation function
+  pearson_correlations(clots.wide |>
+                            filter(num.clots.x == 0 & num.clots.y == 0), 
+                        "sample.avg.ts.hq.x", "sample.avg.ts.hq.y")
+  
+# Call the correlation function
+  pearson_correlations(clots.wide |>
+                            filter(num.clots.x != 0 | num.clots.y != 0), 
+                        "sample.avg.ts.hq.x", "sample.avg.ts.hq.y")
+  
+# Call the correlation function
+  pearson_correlations(clots.wide |>
+                            filter(num.clots.x != 0 & num.clots.y != 0), 
+                        "sample.avg.ts.hq.x", "sample.avg.ts.hq.y")
+  
+```
+
+Fisher's t-tests comparing the correlation between baseline and 1-year
+sample T/S values:
+
+1)  when neither sample included extracts with clots to when either
+    sample included an extract with clots 
+    
+    *t*=-1.82, *p*=.034
+
+2)  when neither sample included extracts with clots to when both
+    samples include extracts with clots
+
+    *t*=-3.826, *p*=0
+
+3)  when either sample included extracts with clots to when both samples
+    include extracts with clots
+
+    *t*=-2.773, *p*=.003
+    
+    
+# ICC Calculations
+
+## ICC calculated with the rpt function
+
+### ICC using all duplicates - regardless of purity
+
+```{r}
+
+rep <- rpt(avg.ts.orig ~ (1|sample.id),
+           grname = c("sample.id"),
+           data = tl.duplicates,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+
+```
+
+### ICC using all samples with two extracts that meet purity standards (no accounting for time point)
+
+-   Attempt to replicate ICC calculation in paper (does not match because UCSF z-scored extracts)
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ (1|sample.id),
+           grname = c("sample.id"),
+           data = hq.duplicates,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+plot(rep)
+
+# One can calculate/double check the rICC estimation using the following code
+model <-lmer(avg.ts.hq ~ 1 + (1 | sample.id),
+             data = hq.duplicates,
+             REML = TRUE)
+
+icc(model)
+summary(model)
+
+```
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ (1|study.id),
+            grname = c("study.id"),
+            data = hq.duplicates,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+plot(rep)
+
+```
+
+### Baseline only
+
+(i.e., extraction is the repeated factor nested within participant)
+
+#### Baseline - all data - estimating random effect for sample.id
+
+```{r}
+
+rep.1 <- rpt(avg.ts.orig ~ (1 | sample.id),
+            grname = c("sample.id"),
+            data = tl.t1.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep.1)
+summary(rep.1)
+plot(rep.1)
+
+```
+
+#### Baseline - all data - estimating random effect for study.id (with baseline
+
+data only, this should be identical to sample.id)
+
+```{r}
+
+rep.1 <- rpt(avg.ts.orig ~ (1 | study.id),
+            grname = c("study.id"),
+            data = tl.t1.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep.1)
+summary(rep.1)
+plot(rep.1)
+
+```
+
+Note: These two models should yield the same results because there is no
+difference between sample.id and study.id when only baseline samples are
+used.
+
+#### Baseline - including samples with 2 extracts only
+
+```{r}
+
+rep.2 <- rpt(avg.ts.orig ~ (1 | sample.id),
+            grname = c("sample.id"),
+            data = tl.t1.extracts |>
+               filter(num.extracts==2),
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep.2)
+summary(rep.2)
+plot(rep.2)
+
+```
+
+#### Baseline - Including samples with 2 extracts AND high quality DNA - included in paper
+
+```{r}
+
+rep.3 <- rpt(avg.ts.hq ~ (1 | sample.id),
+            grname = c("sample.id"),
+            data = hq.t1.extracts |>
+               filter(hq.extracts==2),
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep.3)
+summary(rep.3)
+
+rep.3 <- rpt(avg.ts.hq ~ (1 | sample.id),
+            grname = c("sample.id"),
+            data = hq.avg.ts.values |>
+                filter(time.point=="t1") |>
+                filter(hq.extracts==2),
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+            
+print(rep.3)
+summary(rep.3)
+plot(rep.3)
+
+```
+
+### Both time points included
+
+(ICC of avg.ts.hq for samples with duplicate extractions and both time
+points)
+
+#### random effect for person (study.id) only
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ (1|study.id),
+            grname = c("study.id"),
+            data = hq.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+
+#plot(rep, grname= 'study.id', main='Person', las=1)
+#plot(rep, grname= 'sample.id', main='Sample', las=1)
+
+```
+
+#### random effect for sample (sample.id) only
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ (1|sample.id),
+            grname = c("sample.id"),
+            data = hq.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+
+
+```
+
+#### random effects for study.id and sample.id
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ (1|study.id) + (1|sample.id),
+            grname = c("study.id", "sample.id"),
+            data = hq.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+plot(rep)
+
+#plot(rep, grname= 'study.id', main='Person', las=1)
+#plot(rep, grname= 'sample.id', main='Sample', las=1)
+
+```
+
+#### random effect for study.id with fixed effect for time
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ time.point + (1|study.id),
+            grname = c("study.id"),
+            data = hq.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+
+#plot(rep, grname= 'study.id', main='Person', las=1)
+#plot(rep, grname= 'sample.id', main='Sample', las=1)
+
+```
+
+#### random effects for study.id and sample.id with fixed effect for time
+
+```{r}
+
+rep <- rpt(avg.ts.hq ~ time.point + (1|study.id) + (1|sample.id),
+            grname = c("study.id", "sample.id"),
+            data = hq.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+
+
+#plot(rep, grname= 'study.id', main='Person', las=1)
+#plot(rep, grname= 'sample.id', main='Sample', las=1)
+
+```
+
+(ICC of avg.ts.orig for samples with duplicate extractions and both time
+points)
+
+```{r}
+
+rep <- rpt(avg.ts.orig ~ time.point + (1|study.id) + (1|sample.id), 
+            grname = c("study.id", "sample.id"),
+            data = tl.complete.extracts,
+            datatype = "Gaussian",
+            nboot = 1000,
+            npermut = 0
+          )
+
+print(rep)
+summary(rep)
+plot(rep)
+
+```
+
+(Time point is included in the model. Duplicate extractions are
+technically nested within sample.id (a sample from a given participant
+at a given timepoint), which is nested within study.id (participant),
+but it does not seem possible to fully specify this with in the rpt
+function as it is done in the lmer models i.e., (1\|study.id/sample.id),
+so they are presently modeled as two independent random effects
+(1\|study.id) + (1\|sample.id)).
+
+## Extracting the ICC directly from lmer models with various nesting structures
+
+(nesting structure appears to make no difference)
+
+```{r}
+
+model <- lmer(avg.ts.hq ~ 1 + (1 | study.id/sample.id), 
+              data = hq.duplicates)
+icc(model)
+
+model <- lmer(avg.ts.hq ~ 1 + (1 | study.id) + (1 | study.id:sample.id), 
+              data = hq.duplicates)
+icc(model)
+
+model <- lmer(avg.ts.hq ~ time.point + (1 | study.id) + (1 | study.id:sample.id), 
+              data = hq.duplicates)
+icc(model)
+#report(model)
+
+model <- lmer(avg.ts.hq ~ time.point + (1 | study.id:sample.id), 
+              data = hq.duplicates)
+icc(model)
+#report(model)
+
+```
+
+The addition of time.point does not change the ICC
+
+```{r}
+#| fig-height: 14
+#| fig-width: 14
+
+# Fit the mixed-effects model
+model <- lmer(avg.ts.hq ~ (1 | study.id), data = hq.complete.extracts)
+
+icc(model)
+summary(model)
+#report(model)
+
+```
+
+```{r}
+model <- lmer(avg.ts.hq ~ (1 | study.id/sample.id), data = hq.complete.extracts)
+
+icc(model)
+
+summary(model)
+report(model)
+ranova(model, reduce.terms = TRUE)
+
+# Extract variance components
+var_comp <- VarCorr(model)
+VarCorr
+
+# Extract variance for each random effect
+variance_study_id <- attr(var_comp$`study.id`, "stddev")^2
+variance_sample_id <- attr(var_comp$`sample.id:study.id`, "stddev")^2
+variance_residual <- attr(VarCorr(model), "sc")^2
+
+# Calculate ICC for each random effect
+ICC_study_id <- variance_study_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_study_id
+
+ICC_sample_id <- variance_sample_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_sample_id 
+
+# Calculate R-squared values
+r2(model)
+r.squaredGLMM(model)
+
+```
+
+### Model used to report effect of time in paper
+
+```{r}
+
+model <- lmer(avg.ts.hq ~ time.point + (1 | study.id/sample.id), data = hq.complete.extracts)
+
+icc(model)
+
+summary(model)
+
+ranova(model, reduce.terms = TRUE)
+
+# Extract variance components
+var_comp <- VarCorr(model)
+VarCorr
+
+# Extract variance for each random effect
+variance_study_id <- attr(var_comp$`study.id`, "stddev")^2
+variance_sample_id <- attr(var_comp$`sample.id:study.id`, "stddev")^2
+variance_residual <- attr(VarCorr(model), "sc")^2
+
+# Calculate ICC for each random effect
+ICC_study_id <- variance_study_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_study_id
+
+ICC_sample_id <- variance_sample_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_sample_id 
+
+# Calculate R-squared values
+r2(model)
+r.squaredGLMM(model)
+
+report(model)
+
+```
+
+## Comparing ICCs calculated with the multilevel.ccc function from the misty package
+
+The ICC is a measure used to assess the degree of similarity or
+consistency within groups (clusters) compared to the overall
+variability. In the case of multilevel models, it’s used to quantify how
+much of the variation in the data is attributable to differences between
+groups (or clusters), as opposed to within-group variation.
+
+In the misty package, the type argument is used to specify the type of
+intraclass correlation coefficient (ICC) that should be computed. Here
+is the breakdown of what these options typically represent:
+
+type = "1a": This represents a one-way random-effects model where the
+group effect is treated as a random effect and the ICC is computed for a
+situation where each subject is randomly assigned to one group.
+
+type = "1b": This also refers to a one-way random-effects model, but the
+group effect is modeled as fixed and the ICC is calculated based on this
+fixed group effect.
+
+type = "2": This represents a two-way random-effects model, where both
+the subject and the group effects are considered as random, and the ICC
+is computed based on both sources of variance.
+
+### ICC(1a), i.e., proportion of the total variance explained by the grouping
+
+structure
+
+```{r}
+
+library(misty)
+
+multilevel.icc(avg.ts.orig, 
+               data = tl.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "study.id", 
+               type = "1a")
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "study.id", 
+               type = "1a")
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "sample.id", 
+               type = "1a")
+
+```
+
+### ICC(2), i.e., reliability of aggregated variables in a two-level model
+
+```{r}
+
+multilevel.icc(avg.ts.orig, 
+               data = tl.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates |>
+                   filter(time.point=="t1"), 
+               cluster = "sample.id", 
+               type = "2"
+               )
+```
+
+### ICC(1a)
+
+```{r}
+
+multilevel.icc(avg.ts.orig, 
+               data = tl.duplicates, 
+               cluster = "study.id", 
+               type = "1a"
+               )
+
+multilevel.icc(avg.ts.orig, 
+               data = tl.duplicates, 
+               cluster = "sample.id", 
+               type = "1a"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates, 
+               cluster = "study.id", 
+               type = "1a"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates, 
+               cluster = "sample.id", 
+               type = "1a"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.complete.extracts, 
+               cluster = "study.id", 
+               type = "1a"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.complete.extracts, 
+               cluster = "sample.id", 
+               type = "1a"
+               )
+
+```
+
+### ICC(2) Including duplicates at both time points
+
+```{r}
+
+multilevel.icc(avg.ts.orig, 
+               data = tl.complete.extracts, 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.complete.extracts, 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.complete.extracts, 
+               cluster = "sample.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq.2.runs, 
+               data = hq.complete.extracts, 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+multilevel.icc(avg.ts.hq, 
+               data = hq.duplicates, 
+               cluster = "study.id", 
+               type = "2"
+               )
+
+```
+
+# Mixed effects models
+
+## Timepoint only
+
+```{r}
+
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ time.point +
+                  (1 | study.id/sample.id), 
+                  data = hq.extracts)
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+Anova(model, type = "III")
+
+# Calculate R-squared values
+r2(model)
+r.squaredGLMM(model)
+
+AICc(model)
+BIC(model)
+
+icc(model)
+
+ranova(model, reduce.terms = TRUE)
+
+# Extract variance components
+var_comp <- VarCorr(model)
+
+# Extract variance for each random effect
+variance_study_id <- attr(var_comp$`study.id`, "stddev")^2
+variance_sample_id <- attr(var_comp$`sample.id:study.id`, "stddev")^2
+variance_residual <- attr(VarCorr(model), "sc")^2
+
+# Calculate ICC for each random effect
+ICC_study_id <- variance_study_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_study_id
+
+ICC_sample_id <- variance_sample_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_sample_id 
+
+rm(model)
+
+```
+
+## Timepoint + Person-level covariates
+
+```{r}
+
+# Set global na.action before fitting the model
+options(na.action = "na.fail") 
+
+# Remove rows with missing data in any of the variables
+hq.extracts.omit.na <- hq.extracts |>   
+    filter(sex != "Non-binary/ third gender") |>
+    dplyr::select("study.id",
+                  "sample.id",
+                  "avg.ts.hq",
+                  "time.point",
+                  "age",
+                  "age.zscore",
+                  "sex",
+                  "bmi",
+                  "bmi.zscore")|>
+    na.omit()  # Remove rows with missing values
+
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ time.point + age.zscore + sex + bmi.zscore + 
+                  (1 | study.id/sample.id), 
+                  data = hq.extracts.omit.na)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+Anova(model, type = "III")
+
+# Calculate R-squared values
+r2(model)
+r.squaredGLMM(model)
+
+AICc(model)
+BIC(model)
+
+icc(model)
+
+ranova(model, reduce.terms = TRUE)
+
+# Extract variance components
+var_comp <- VarCorr(model)
+
+# Extract variance for each random effect
+variance_study_id <- attr(var_comp$`study.id`, "stddev")^2
+variance_sample_id <- attr(var_comp$`sample.id:study.id`, "stddev")^2
+variance_residual <- attr(VarCorr(model), "sc")^2
+
+# Calculate ICC for each random effect
+ICC_study_id <- variance_study_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_study_id
+
+ICC_sample_id <- variance_sample_id / (variance_study_id + variance_sample_id + variance_residual)
+
+ICC_sample_id 
+
+
+report(model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+
+
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ age.zscore + sex + 
+                  (1 | study.id/sample.id), 
+                  data = hq.extracts.omit.na)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+#Anova(model, type = "III")
+
+# Calculate R-squared values
+r2(model)
+
+AICc(model)
+BIC(model)
+
+```
+
+
+## Extract-level variables
+
+### Extract only
+
+#### Base/Dredge
+
+```{r}
+#| label: lme-extract-variables-only
+
+# Set global na.action before fitting the model
+options(na.action = "na.fail") 
+
+# Remove rows with missing data in any of the variables
+hq.extracts.omit.na <- na.omit(hq.extracts [, c("study.id", 
+                                                "sample.id",
+                                                "avg.ts.hq",
+                                                "time.point",
+                                                "DNA.conc.zscore",
+                                                "OD.260.280.zscore",
+                                                "OD.260.230.zscore",
+                                                "clot")])
+ 
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ 
+                  time.point*DNA.conc.zscore + 
+                  time.point*OD.260.280.zscore + 
+                  time.point*OD.260.230.zscore + 
+                  time.point*clot + 
+                  (1 | study.id/sample.id), 
+                  data = hq.extracts.omit.na)
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(model)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+#Anova(model, type = "III")
+
+# Calculate R-squared values
+r2(model)
+
+AICc(model)
+BIC(model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(model, rank = "AICc")
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+ 
+# Best fitting model
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ clot + OD.260.280.zscore + OD.260.230.zscore + 
+                       (1 | study.id / sample.id), 
+                  data = hq.extracts.omit.na)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+Anova(model, type = "III")
+
+ranova(model, reduce.terms = TRUE)
+
+icc(model)
+
+# Calculate R-squared values
+r2(model)
+
+AICc(model)
+BIC(model)
+
+report(model)
+
+rm(model)
+
+```
+
+### Extract + Person
+
+#### Base/Dredge
+
+```{r}
+#| label: lme-extract-variables-plus-person-level-covariates
+
+# Set global na.action before fitting the model
+options(na.action = "na.fail") 
+
+# Remove rows with missing data in any of the variables
+hq.extracts.omit.na <- hq.extracts |>   
+    filter(sex != "Non-binary/ third gender") |>
+    dplyr::select("study.id",
+                  "sample.id",
+                  "avg.ts.hq",
+                  "time.point",
+                  "age.zscore",
+                  "sex",
+                  "bmi.zscore",
+                  "DNA.conc.zscore",
+                  "OD.260.280.zscore",
+                  "OD.260.230.zscore",
+                  "clot")|>
+    na.omit()  # Remove rows with missing values
+ 
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ time.point + age.zscore + sex + bmi.zscore + 
+                       time.point*DNA.conc.zscore + time.point*clot +    
+                       time.point*OD.260.280.zscore + time.point*OD.260.230.zscore + 
+                       (1 | study.id/sample.id), 
+                   data = hq.extracts.omit.na)
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(model)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+Anova(model, type = "III")
+
+# Calculate R-squared values
+r2(model)
+
+AICc(model)
+BIC(model)
+
+
+# Comparing nested models with dredge function
+model_set <- dredge(model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+ 
+# Best fitting model
+# Use lmer() from lme4 package
+model <- lmer(avg.ts.hq ~ age.zscore + sex + clot + OD.260.280.zscore + OD.260.230.zscore + 
+                       (1 | study.id/sample.id), 
+                  data = hq.extracts.omit.na)
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(model)
+
+# Model Summary
+summary(model)
+
+# ANOVA table with Type III sums of squares
+Anova(model, type = "III")
+
+ranova(model, reduce.terms = TRUE)
+
+icc(model)
+
+# Calculate R-squared values
+r2(model)
+
+AICc(model)
+BIC(model)
+
+
+report(model)
+
+rm(model)
+rm(model_set)
+
+```
+
+
+### Time 1 - Extract-levels variables 
+
+#### Base
+
+```{r}
+#| label: lme-extract-variables
+
+options(na.action = "na.fail") 
+
+# Remove rows with missing data in any of the variables
+hq.extracts.omit.na <- hq.extracts |>   
+    filter(sex != "Non-binary/ third gender") |>
+    dplyr::select("study.id",
+                  "sample.id",
+                  "avg.ts.hq",
+                  "time.point",
+                  "age.zscore",
+                  "sex",
+                  "bmi.zscore",
+                  "DNA.conc.zscore",
+                  "OD.260.280.zscore",
+                  "OD.260.230.zscore",
+                  "clot")|>
+    na.omit()  # Remove rows with missing values
+
+
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na|>
+                     filter(time.point=="t1")) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+options(na.action = "na.omit") 
+
+```
+
+#### Dredge
+
+```{r}
+
+options(na.action = "na.fail") 
+
+hq.extracts.omit.na.t1= hq.extracts.omit.na|>
+                     filter(time.point=="t1")
+                            
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ age.zscore + sex + bmi.zscore + 
+                          DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t1) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(t1.model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t1.model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+                            
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ age.zscore + sex + clot + OD.260.280.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t1) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+rm(t1.model)
+rm(model_set)
+
+```
+
+
+### Time 4 - Extract-levels variables plus sample handling variables plus Age, Sex, and BMI
+
+#### Base
+
+```{r}
+
+hq.extracts.omit.na.t4 <- hq.extracts.omit.na|>
+                     filter(time.point=="t4")
+                                                                  
+# Use lmer() from lme4 package
+t4.model <- lmer(avg.ts.hq ~ DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+rm(t4.model)
+
+```
+
+#### Dredge
+
+```{r}
+
+options(na.action = "na.fail") 
+
+t4.model <- lmer(avg.ts.hq ~ age.zscore + sex + bmi.zscore + 
+                          DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(t4.model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t4.model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+                                                                  
+# Use lmer() from lme4 package
+
+t4.model <- lmer(avg.ts.hq ~ age.zscore + sex + DNA.conc.zscore + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t4.model)
+
+
+```
+
+### Time 1 - Extract-levels variables plus sample handling variables plus Age, Sex, and BMI
+
+#### Base
+
+```{r}
+#| label: lme-extract-variables-plus-sample-handling-variables-person-level-covariates
+
+options(na.action = "na.fail") 
+
+# Remove rows with missing data in any of the variables
+hq.extracts.omit.na <- hq.extracts |>   
+    filter(sex != "Non-binary/ third gender") |>
+    dplyr::select("study.id",
+                  "sample.id",
+                  "avg.ts.hq",
+                  "time.point",
+                  "age.zscore",
+                  "sex",
+                  "bmi.zscore",
+                  "DNA.conc.zscore",
+                  "OD.260.280.zscore",
+                  "OD.260.230.zscore",
+                  "clot",
+                  "collection.max.temp.zscore",
+                  "davis.max.temp.zscore",
+                  "transportation.duration.zscore",
+                  "cold.pack.condition",
+                  "cold.pack.condition.reversed")|>
+    na.omit()  # Remove rows with missing values
+
+# Apply sequential contrasts directly
+contrasts(hq.extracts.omit.na$cold.pack.condition.reversed) <- 
+  contr.treatment(4, base = 1) 
+
+contrasts(hq.extracts.omit.na$cold.pack.condition.reversed)
+
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ collection.max.temp.zscore + davis.max.temp.zscore + 
+                          transportation.duration.zscore + cold.pack.condition.reversed + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na|>
+                     filter(time.point=="t1")) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+rm(t1.model)
+
+options(na.action = "na.omit") 
+
+```
+
+#### Dredge
+
+```{r}
+
+options(na.action = "na.fail") 
+
+hq.extracts.omit.na.t1= hq.extracts.omit.na|>
+                     filter(time.point=="t1")
+
+# Apply sequential contrasts directly
+contrasts(hq.extracts.omit.na.t1$cold.pack.condition.reversed) <- 
+  contr.treatment(4, base = 1) 
+
+contrasts(hq.extracts.omit.na.t1$cold.pack.condition.reversed)
+                            
+                            
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ age.zscore + sex + bmi.zscore + 
+                          DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                          collection.max.temp.zscore + davis.max.temp.zscore + 
+                          transportation.duration.zscore + cold.pack.condition.reversed + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t1) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(t1.model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+print(model_set)
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t1.model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+                            
+# Use lmer() from lme4 package
+t1.model <- lmer(avg.ts.hq ~ age.zscore +
+                          DNA.conc.zscore +
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t1) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t1.model)
+
+# Model Summary
+summary(t1.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t1.model, type = "III")
+
+# Calculate R-squared values
+r2(t1.model)
+
+AICc(t1.model)
+BIC(t1.model)
+
+rm(t1.model)
+rm(model_set)
+
+```
+
+
+### Time 4 - Extract-levels variables plus sample handling variables plus Age, Sex, and BMI
+
+#### Base
+
+```{r}
+
+hq.extracts.omit.na.t4 <- hq.extracts.omit.na|>
+                     filter(time.point=="t4")|>
+                     mutate(cold.pack.condition.reversed = factor(cold.pack.condition.reversed, ordered = TRUE))
+
+contrasts(hq.extracts.omit.na.t4$cold.pack.condition.reversed) <- 
+  contr.treatment(3, base = 1) 
+
+contrasts(hq.extracts.omit.na.t4$cold.pack.condition.reversed)
+                                                                  
+# Use lmer() from lme4 package
+t4.model <- lmer(avg.ts.hq ~ collection.max.temp.zscore + davis.max.temp.zscore + 
+                          transportation.duration.zscore + cold.pack.condition.reversed + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+rm(t4.model)
+
+```
+
+#### Dredge
+
+```{r}
+
+options(na.action = "na.fail") 
+
+hq.extracts.omit.na.t4 <- hq.extracts.omit.na|>
+                     filter(time.point=="t4")|>
+                     mutate(cold.pack.condition.reversed = factor(cold.pack.condition.reversed, ordered = TRUE))
+
+contrasts(hq.extracts.omit.na.t4$cold.pack.condition.reversed) <- 
+  contr.treatment(3, base = 1) 
+
+contrasts(hq.extracts.omit.na.t4$cold.pack.condition.reversed)
+                           
+# Use lmer() from lme4 package
+t4.model <- lmer(avg.ts.hq ~ age.zscore + sex + bmi.zscore + 
+                          DNA.conc.zscore + clot + OD.260.280.zscore + OD.260.230.zscore +
+                          collection.max.temp.zscore + davis.max.temp.zscore + 
+                          transportation.duration.zscore + cold.pack.condition.reversed + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+# Comparing nested models with dredge function
+model_set <- dredge(t4.model)
+
+# Display the model set summary with AIC, AICc, and BIC
+head(model_set)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t4.model)
+rm(model_set)
+
+```
+
+#### Best fitting model
+
+```{r}
+                                                                  
+# Use lmer() from lme4 package
+t4.model <- lmer(avg.ts.hq ~ age.zscore + sex + DNA.conc.zscore + 
+                   (1 | study.id), 
+                   data = hq.extracts.omit.na.t4) 
+
+# Variance Inflation Factor (VIF) to assess multicoliniarity 
+vif(t4.model)
+
+# Model Summary
+summary(t4.model)
+
+# ANOVA table with Type III sums of squares
+Anova(t4.model, type = "III")
+
+# Calculate R-squared values
+r2(t4.model)
+
+AICc(t4.model)
+BIC(t4.model)
+
+# Set global na.action before fitting the model
+options(na.action = "na.omit") 
+
+rm(t4.model)
+
+
+```
+
